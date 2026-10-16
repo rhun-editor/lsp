@@ -16,15 +16,17 @@ dir=$work/exts/rhun-editor/lsp
 state=$work/state/rhun/extensions/rhun-editor--lsp
 mkdir -p "$dir/bin" "$work/proj" "$work/config/rhun" "$state"
 CGO_ENABLED=0 go build -o "$dir/bin/lsp-$target" .
-CGO_ENABLED=0 go build -o "$work/fakeserver" ./tests/fakeserver
+# the fake server is "gopls" on a PATH of its own: the manifest's run list names gopls, and the
+# sandbox lets the extension start only what the list names
+mkdir -p "$work/bin"
+CGO_ENABLED=0 go build -o "$work/bin/gopls" ./tests/fakeserver
 cp extension.ini "$dir/"
-printf '[servers]\nGo = %s\n' "$work/fakeserver" > "$state/lsp.ini"
 printf 'package main\n\n// TODO first\nfunc main() {\n\tERR := 1\n\t_ = ERR\n}\n' > "$work/proj/main.go"
 printf 'package main\n\nfunc other() {}\n' > "$work/proj/other.go"
 printf '[files]\nrestore_session = false\nrestore_project = false\n[updates]\ncheck = false\n[git]\nenabled = false\n[ui]\nsidebar = false\nagents_panel = false\n[editor]\ncursor_blink = false\n' > "$work/config/rhun/config"
 run() { # SCRIPT: runs it in a fresh editor, the output on stdout
     sed "s|proj/|$work/proj/|" "$1" > "$work/script.txt"
-    HOME=$work XDG_CONFIG_HOME=$work/config XDG_STATE_HOME=$work/state \
+    PATH="$work/bin:$PATH" HOME=$work XDG_CONFIG_HOME=$work/config XDG_STATE_HOME=$work/state \
         "$RHUN" "$work/proj" --headless 1000x600 --scale 1 --extensions "$work/exts" --script "$work/script.txt" 2>&1
 }
 cell=$(run tests/cell.txt | tail -1)   # where line 5 column 3 is on this platform's font

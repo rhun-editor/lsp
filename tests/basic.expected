@@ -1,6 +1,6 @@
-rhun-editor/lsp state=idle pid=0 cmds=lsp.definition,lsp.restart
+rhun-editor/lsp state=idle pid=0 cmds=lsp.definition,lsp.restart confined=0
 ext=lsp state=running
-rhun-editor/lsp state=running pid=PID cmds=lsp.definition,lsp.restart status=fakeserver
+rhun-editor/lsp state=running pid=PID cmds=lsp.definition,lsp.restart confined=1 status=gopls
 3 4 3 8 warning rhun-editor/lsp fake: TODO here
 5 2 5 5 error rhun-editor/lsp fake: ERR here
 6 6 6 9 error rhun-editor/lsp fake: ERR here
