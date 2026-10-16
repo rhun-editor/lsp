@@ -1,0 +1,25 @@
+# rhun PROJECT --headless --extensions DIR --script tests/basic.txt (tests/run.sh sets it up and
+# replaces X Y with the pixel position of line 5 column 3, the R of ERR)
+wait 100
+print-extensions
+open proj/main.go
+wait-ext lsp running
+wait 800
+print-extensions
+print-marks
+move X Y
+wait 800
+print-hover
+key ctrl+Home
+key Down
+key Down
+key Home
+type // a comment
+key Return
+wait 800
+print-marks
+print-state
+key ctrl+End
+cmd lsp.definition
+wait 300
+print-state

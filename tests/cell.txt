@@ -1,0 +1,3 @@
+open proj/main.go
+wait 200
+print-text-cell 5 3

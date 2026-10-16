@@ -1,0 +1,38 @@
+#!/bin/sh
+# Builds lsp and the fake language server, points the extension at the fake through lsp.ini in
+# its state folder, lays it out as rhun installs it, and runs tests/basic.txt headlessly against a
+# rhun binary. usage: tests/run.sh [RHUN]
+set -e
+cd "$(dirname "$0")/.."
+RHUN=${1:-$(command -v rhun || echo "$HOME/.local/bin/rhun")}
+case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64) target=linux-x86_64 ;;
+    Darwin-arm64) target=macos-arm64 ;;
+    *) echo "no target for $(uname -s)-$(uname -m)"; exit 77 ;;
+esac
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+dir=$work/exts/rhun-editor/lsp
+state=$work/state/rhun/extensions/rhun-editor--lsp
+mkdir -p "$dir/bin" "$work/proj" "$work/config/rhun" "$state"
+CGO_ENABLED=0 go build -o "$dir/bin/lsp-$target" .
+CGO_ENABLED=0 go build -o "$work/fakeserver" ./tests/fakeserver
+cp extension.ini "$dir/"
+printf '[servers]\nGo = %s\n' "$work/fakeserver" > "$state/lsp.ini"
+printf 'package main\n\n// TODO first\nfunc main() {\n\tERR := 1\n\t_ = ERR\n}\n' > "$work/proj/main.go"
+printf 'package main\n\nfunc other() {}\n' > "$work/proj/other.go"
+printf '[files]\nrestore_session = false\nrestore_project = false\n[updates]\ncheck = false\n[git]\nenabled = false\n[ui]\nsidebar = false\nagents_panel = false\n[editor]\ncursor_blink = false\n' > "$work/config/rhun/config"
+run() { # SCRIPT: runs it in a fresh editor, the output on stdout
+    sed "s|proj/|$work/proj/|" "$1" > "$work/script.txt"
+    HOME=$work XDG_CONFIG_HOME=$work/config XDG_STATE_HOME=$work/state \
+        "$RHUN" "$work/proj" --headless 1000x600 --scale 1 --extensions "$work/exts" --script "$work/script.txt" 2>&1
+}
+cell=$(run tests/cell.txt | tail -1)   # where line 5 column 3 is on this platform's font
+sed "s|^move X Y|move $cell|" tests/basic.txt > "$work/basic.src"
+run "$work/basic.src" | sed 's/pid=[1-9][0-9]*/pid=PID/' > "$work/out.txt"
+if cmp -s "$work/out.txt" tests/basic.expected; then
+    echo "ok   basic"
+else
+    echo "FAIL basic"; diff tests/basic.expected "$work/out.txt" || true
+    echo "--- the extension's log:"; cat "$work"/state/rhun/extensions/*.log 2>/dev/null | tail -20; exit 1
+fi
