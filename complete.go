@@ -7,6 +7,7 @@ package main
 import (
 	"encoding/json"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -140,7 +141,11 @@ func (l *lsp) Complete(ext *rhunext.Ext, req rhunext.Request) rhunext.Completion
 			c.Insert = it.Label
 		}
 		if it.InsertTextFormat == 2 {
-			c.Insert = plainSnippet(c.Insert)
+			var cursor int
+			c.Insert, cursor = plainSnippet(c.Insert)
+			if cursor >= 0 {
+				c = c.WithCursor(cursor)
+			}
 		}
 		for _, e := range it.AdditionalEdits {
 			if e.Range != nil {
@@ -263,12 +268,40 @@ func docText(raw json.RawMessage) string {
 }
 
 // plainSnippet turns a snippet into its text: ${1:name} is name, a later $1 repeats it, $0 and an
-// empty $N are nothing, \$ is $
-func plainSnippet(s string) string {
-	return snippetText(s, map[string]string{})
+// empty $N are nothing, \$ is $. The cursor goes where the first tab stop is ($1, else $0): its
+// byte offset in the text, or -1 without one.
+func plainSnippet(s string) (string, int) {
+	stops := map[int]int{}
+	text := snippetText(s, map[string]string{}, stops)
+	first := -1
+	for n := range stops {
+		if n > 0 && (first < 0 || n < first) {
+			first = n
+		}
+	}
+	if first < 0 {
+		first = 0
+	}
+	if off, ok := stops[first]; ok {
+		return text, off
+	}
+	return text, -1
 }
 
-func snippetText(s string, seen map[string]string) string {
+// snippetText is the text of a snippet; stops (when not nil) gets where each tab stop starts
+func snippetText(s string, seen map[string]string, stops map[int]int) string {
+	mark := func(num string, at int) {
+		if stops == nil {
+			return
+		}
+		n, err := strconv.Atoi(num)
+		if err != nil {
+			return
+		}
+		if _, ok := stops[n]; !ok {
+			stops[n] = at
+		}
+	}
 	var b strings.Builder
 	for i := 0; i < len(s); {
 		c := s[i]
@@ -281,6 +314,7 @@ func snippetText(s string, seen map[string]string) string {
 			for j < len(s) && s[j] >= '0' && s[j] <= '9' {
 				j++
 			}
+			mark(s[i+1:j], b.Len())
 			b.WriteString(seen[s[i+1:j]])
 			i = j
 		case c == '$' && i+1 < len(s) && s[i+1] == '{':
@@ -306,12 +340,13 @@ func snippetText(s string, seen map[string]string) string {
 			text := ""
 			switch {
 			case strings.HasPrefix(inner, ":"):
-				text = snippetText(inner[1:], seen)
+				text = snippetText(inner[1:], seen, nil)
 			case strings.HasPrefix(inner, "|"):
 				choices := strings.Trim(inner, "|")
 				text, _, _ = strings.Cut(choices, ",")
 			}
 			seen[s[i+2:j]] = text
+			mark(s[i+2:j], b.Len())
 			b.WriteString(text)
 			i = k
 		default:

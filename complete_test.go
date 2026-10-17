@@ -6,16 +6,21 @@ import (
 )
 
 func TestPlainSnippet(t *testing.T) {
-	for in, want := range map[string]string{
-		"for ${1:i} := 0; $1 < ${2:n}; $1++ {\n\t$0\n}": "for i := 0; i < n; i++ {\n\t\n}",
-		"println!(\"${1}\")":                            "println!(\"\")",
-		"${1|one,two|}":                                 "one",
-		"a \\$ b":                                       "a $ b",
-		"${1:outer ${2:inner}}":                         "outer inner",
-		"héllo$0":                                       "héllo",
+	for _, c := range []struct {
+		in, want string
+		cursor   int
+	}{
+		{"for ${1:i} := 0; $1 < ${2:n}; $1++ {\n\t$0\n}", "for i := 0; i < n; i++ {\n\t\n}", 4},
+		{"println!(\"${1}\")", "println!(\"\")", 10},
+		{"${1|one,two|}", "one", 0},
+		{"a \\$ b", "a $ b", -1},
+		{"${1:outer ${2:inner}}", "outer inner", 0},
+		{"héllo$0", "héllo", 6},
+		{"Println($0)", "Println()", 8},
 	} {
-		if got := plainSnippet(in); got != want {
-			t.Errorf("plainSnippet(%q) = %q, want %q", in, got, want)
+		got, cursor := plainSnippet(c.in)
+		if got != c.want || cursor != c.cursor {
+			t.Errorf("plainSnippet(%q) = %q %d, want %q %d", c.in, got, cursor, c.want, c.cursor)
 		}
 	}
 }
