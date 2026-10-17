@@ -23,6 +23,7 @@ CGO_ENABLED=0 go build -o "$work/bin/gopls" ./tests/fakeserver
 cp extension.ini "$dir/"
 printf 'package main\n\n// TODO first\nfunc main() {\n\tERR := 1\n\t_ = ERR\n}\n' > "$work/proj/main.go"
 printf 'package main\n\nfunc other() {}\n' > "$work/proj/other.go"
+printf 'package main\n\nfunc f() {\n    x := 1\n    _ = x\n}\n' > "$work/proj/fmt.go"
 printf '[files]\nrestore_session = false\nrestore_project = false\n[updates]\ncheck = false\n[git]\nenabled = false\n[ui]\nsidebar = false\nagents_panel = false\n[editor]\ncursor_blink = false\n' > "$work/config/rhun/config"
 run() { # SCRIPT: runs it in a fresh editor, the output on stdout
     sed "s|proj/|$work/proj/|" "$1" > "$work/script.txt"
@@ -32,9 +33,18 @@ run() { # SCRIPT: runs it in a fresh editor, the output on stdout
 cell=$(run tests/cell.txt | tail -1)   # where line 5 column 3 is on this platform's font
 sed "s|^move X Y|move $cell|" tests/basic.txt > "$work/basic.src"
 run "$work/basic.src" | sed 's/pid=[1-9][0-9]*/pid=PID/' > "$work/out.txt"
-if cmp -s "$work/out.txt" tests/basic.expected; then
-    echo "ok   basic"
-else
-    echo "FAIL basic"; diff tests/basic.expected "$work/out.txt" || true
-    echo "--- the extension's log:"; cat "$work"/state/rhun/extensions/*.log 2>/dev/null | tail -20; exit 1
-fi
+check() { # NAME: the output against tests/NAME.expected (UPDATE=1 writes it instead)
+    if [ -n "$UPDATE" ]; then cp "$work/out.txt" "tests/$1.expected"; fi
+    if cmp -s "$work/out.txt" "tests/$1.expected"; then
+        echo "ok   $1"
+    else
+        echo "FAIL $1"; diff "tests/$1.expected" "$work/out.txt" || true
+        echo "--- the extension's log:"; cat "$work"/state/rhun/extensions/*.log 2>/dev/null | tail -20; exit 1
+    fi
+}
+check basic
+# the language features change the files: a fresh copy of the project
+printf 'package main\n\nfunc other() {}\n' > "$work/proj/other.go"
+printf 'package main\n\n// TODO first\nfunc main() {\n\tERR := 1\n\t_ = ERR\n}\n' > "$work/proj/main.go"
+run tests/lang.txt | sed 's/pid=[1-9][0-9]*/pid=PID/' > "$work/out.txt"
+check lang

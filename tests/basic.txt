@@ -20,7 +20,7 @@ wait 800
 print-marks
 print-state
 key ctrl+End
-cmd lsp.definition
+key F12
 wait 300
 print-state
 key ctrl+Home

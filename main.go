@@ -1,7 +1,8 @@
 // lsp: language servers for rhun. One server per language per project (gopls, rust-analyzer,
 // typescript-language-server, pyright, clangd, …), started when a document of the language opens;
-// diagnostics in the gutter, hover text when the pointer rests, Go to Definition (F12), completion
-// lists as you type and signature help inside a call (complete.go).
+// diagnostics in the gutter, hover text when the pointer rests, completion lists as you type and
+// signature help inside a call (complete.go), and definitions, references, symbols, code actions,
+// rename and format (lang.go).
 // Documents are kept in step with rhun through the edits stream (section 6a of the protocol) and
 // sent to the server incrementally. Settings: $RHUN_STATE/lsp.ini.
 // Protocol: https://rhun.app/extensions/v1/
@@ -81,7 +82,7 @@ type lsp struct {
 	byPath  map[string]*document
 	servers map[string]*server // by language
 	config  map[string][]string
-	cursor  map[rhunext.Doc]rhunext.Pos
+	diags   map[string][]json.RawMessage // the server's diagnostics by path, for code actions
 }
 
 func (l *lsp) Ready(ext *rhunext.Ext, project string) {
@@ -91,7 +92,7 @@ func (l *lsp) Ready(ext *rhunext.Ext, project string) {
 	l.docs = map[rhunext.Doc]*document{}
 	l.byPath = map[string]*document{}
 	l.servers = map[string]*server{}
-	l.cursor = map[rhunext.Doc]rhunext.Pos{}
+	l.diags = map[string][]json.RawMessage{}
 	l.config = readConfig(filepath.Join(l.state, "lsp.ini"))
 }
 
@@ -166,13 +167,6 @@ func (l *lsp) Event(ext *rhunext.Ext, ev rhunext.Event) {
 		if d := l.docs[rhunext.Doc(id)]; d != nil && d.server != nil && d.server.ready {
 			d.server.notify("textDocument/didSave", map[string]any{"textDocument": map[string]any{"uri": fileURI(d.path)}})
 		}
-	case "cursor":
-		var id int64
-		var line, col int
-		fmt.Sscan(argOr(ev, 0), &id)
-		fmt.Sscan(argOr(ev, 1), &line)
-		fmt.Sscan(argOr(ev, 2), &col)
-		l.cursor[rhunext.Doc(id)] = rhunext.Pos{Line: line, Col: col}
 	case "hover":
 		id, at, ok := rhunext.ParseHover(ev)
 		if !ok {
@@ -185,17 +179,7 @@ func (l *lsp) Event(ext *rhunext.Ext, ev rhunext.Event) {
 }
 
 func (l *lsp) Run(ext *rhunext.Ext, command string, doc rhunext.Doc) {
-	l.mu.Lock()
-	d := l.docs[doc]
-	at := l.cursor[doc]
-	l.mu.Unlock()
 	switch command {
-	case "lsp.definition":
-		if d == nil || d.server == nil || !d.server.ready {
-			ext.Toast("No language server for this file")
-			return
-		}
-		go l.definition(d, at)
 	case "lsp.restart":
 		l.mu.Lock()
 		for lang, s := range l.servers {
@@ -305,55 +289,6 @@ func (l *lsp) hover(d *document, at rhunext.Pos) {
 	}
 }
 
-func (l *lsp) definition(d *document, at rhunext.Pos) {
-	l.mu.Lock()
-	off := byteOffset(d.text, at)
-	pos := lspPos(d.text, off)
-	l.mu.Unlock()
-	res, err := d.server.call("textDocument/definition", map[string]any{
-		"textDocument": map[string]any{"uri": fileURI(d.path)}, "position": pos})
-	if err != nil || res == nil || string(res) == "null" {
-		l.ext.Toast("No definition found")
-		return
-	}
-	var locs []location
-	if res[0] == '[' {
-		json.Unmarshal(res, &locs)
-	} else {
-		var one location
-		json.Unmarshal(res, &one)
-		locs = []location{one}
-	}
-	if len(locs) == 0 {
-		l.ext.Toast("No definition found")
-		return
-	}
-	loc := locs[0]
-	uri := loc.URI
-	if uri == "" {
-		uri = loc.TargetURI
-	}
-	rg := loc.Range
-	if loc.TargetSelectionRange != nil {
-		rg = *loc.TargetSelectionRange
-	}
-	path := uriPath(uri)
-	// the target's text, for the UTF-16 column: the open document's, or the file's
-	var text []byte
-	l.mu.Lock()
-	if t := l.byPath[path]; t != nil {
-		text = t.text
-	}
-	l.mu.Unlock()
-	if text == nil {
-		text, _ = os.ReadFile(path)
-	}
-	p := rhunPos(text, rg.Start)
-	if _, err := l.ext.Open(path, p); err != nil {
-		l.ext.Toast("Cannot open " + filepath.Base(path))
-	}
-}
-
 // ---- a language server
 
 type server struct {
@@ -424,12 +359,22 @@ func (s *server) start() {
 				"publishDiagnostics": map[string]any{"versionSupport": true},
 				"hover":              map[string]any{"contentFormat": []string{"plaintext", "markdown"}},
 				"definition":         map[string]any{"linkSupport": true},
+				"references":         map[string]any{},
+				"documentSymbol":     map[string]any{"hierarchicalDocumentSymbolSupport": true},
+				"codeAction": map[string]any{"isPreferredSupport": true, "disabledSupport": true,
+					"codeActionLiteralSupport": map[string]any{"codeActionKind": map[string]any{"valueSet": []string{
+						"", "quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite", "source",
+						"source.organizeImports", "source.fixAll"}}}},
+				"rename":     map[string]any{"prepareSupport": false},
+				"formatting": map[string]any{},
 				"completion": map[string]any{"contextSupport": true, "completionItem": map[string]any{
 					"snippetSupport": false, "documentationFormat": []string{"plaintext", "markdown"}}},
 				"signatureHelp": map[string]any{"contextSupport": true, "signatureInformation": map[string]any{
 					"documentationFormat":  []string{"plaintext", "markdown"},
 					"parameterInformation": map[string]any{"labelOffsetSupport": true}, "activeParameterSupport": true}},
 			},
+			"workspace": map[string]any{"applyEdit": true, "executeCommand": map[string]any{},
+				"workspaceEdit": map[string]any{"documentChanges": true, "resourceOperations": []string{}}},
 			"general": map[string]any{"positionEncodings": []string{"utf-16"}},
 		},
 	})
@@ -558,6 +503,8 @@ func (s *server) read(br *bufio.Reader) {
 			}
 		case msg.Method == "textDocument/publishDiagnostics":
 			s.publish(msg.Params)
+		case msg.Method == "workspace/applyEdit" && len(msg.ID) > 0:
+			go s.applyEdit(msg.ID, msg.Params)
 		case len(msg.ID) > 0:
 			// a request from the server: configuration, registrations, progress: answered with null
 			s.write(map[string]any{"jsonrpc": "2.0", "id": msg.ID, "result": nil})
@@ -578,7 +525,12 @@ func (s *server) publish(params json.RawMessage) {
 	if json.Unmarshal(params, &p) != nil {
 		return
 	}
+	var raw struct {
+		Diagnostics []json.RawMessage `json:"diagnostics"`
+	}
+	json.Unmarshal(params, &raw)
 	s.l.mu.Lock()
+	s.l.diags[uriPath(p.URI)] = raw.Diagnostics
 	d := s.l.byPath[uriPath(p.URI)]
 	var text []byte
 	var version int64
@@ -775,7 +727,9 @@ func argOr(ev rhunext.Event, i int) string {
 }
 
 func main() {
-	if err := rhunext.RunWith([]string{rhunext.FeatureComplete, rhunext.FeatureSignature}, &lsp{}); err != nil {
+	features := []string{rhunext.FeatureComplete, rhunext.FeatureSignature, rhunext.FeatureDefinition,
+		rhunext.FeatureReferences, rhunext.FeatureSymbols, rhunext.FeatureActions, rhunext.FeatureRename, rhunext.FeatureFormat}
+	if err := rhunext.RunWith(features, &lsp{}); err != nil {
 		os.Exit(1)
 	}
 }

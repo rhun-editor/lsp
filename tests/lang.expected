@@ -1,0 +1,68 @@
+ext=lsp state=running
+tabs=1 active=main.go line=5 col=5 sel=0 dirty=0 lang=Go focus=0 theme=rhun-dark
+choose=Go to reference
+field=
+> main.go:5  ERR := 1
+  main.go:6  _ = ERR
+choose=Go to symbol
+field=
+> main
+    ERR
+tabs=1 active=main.go line=5 col=5 sel=0 dirty=0 lang=Go focus=0 theme=rhun-dark
+choose=Code action
+field=
+> Rename ERR to Err
+  Add a comment
+package main
+
+// TODO first
+func main() {
+	Err := 1
+	_ = ERR
+}
+
+<eod>
+choose=Code action
+field=
+> Add a comment
+// added by a command
+package main
+
+// TODO first
+func main() {
+	Err := 1
+	_ = ERR
+}
+
+<eod>
+tabs=1 active=main.go line=5 col=10 sel=0 dirty=1 lang=Go focus=0 theme=rhun-dark
+prompt=New name
+field=main
+toast=bad is not a good name
+toast=Renamed: check the changed files and save them
+tabs=*main.go | other.go
+// added by a command
+package app
+
+// TODO first
+func app() {
+	Err := 1
+	_ = ERR
+}
+
+<eod>
+package app
+
+func other() {}
+
+<eod>
+tabs=3 active=fmt.go line=1 col=1 sel=0 dirty=0 lang=Go focus=0 theme=rhun-dark
+toast=
+package main
+
+func f() {
+	x := 1
+	_ = x
+}
+
+<eod>

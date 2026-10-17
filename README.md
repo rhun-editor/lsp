@@ -2,7 +2,11 @@
 
 Language servers for [rhun](https://rhun.app): completion lists as you type (`ctrl+space` for
 one at once), signature help inside a call (`ctrl+shift+space`), diagnostics in the gutter and
-the status bar, hover text when the pointer rests on a symbol, and **Go to Definition** (F12). One server per
+the status bar, hover text when the pointer rests on a symbol, **Go to Definition** (F12),
+**Find All References** (shift+F12), **Go to Symbol in File** (ctrl+r), **code actions**
+(ctrl+.: the server's quick fixes, refactorings and commands), **Rename Symbol** (F2 on a word:
+every file the server changes opens unsaved for you to review) and **Format Document**
+(shift+alt+f, with the document's tab width and spaces). One server per
 language per project, started when the first document of the language opens, run from the
 project folder. Nothing is downloaded: the extension runs the server you already have on your
 `PATH`:

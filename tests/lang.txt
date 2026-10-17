@@ -1,0 +1,72 @@
+# rhun PROJECT --headless --extensions DIR --script tests/lang.txt (tests/run.sh sets it up):
+# references, symbols, code actions (an edit, and a server command that asks for an edit),
+# rename across an open and a closed file, a refused rename, format
+wait 100
+open proj/main.go
+wait-ext lsp running
+wait 800
+key ctrl+Home
+key Down
+key Down
+key Down
+key Down
+key End
+key Home
+print-state
+key shift+F12
+wait 600
+print-palette
+key Escape
+key ctrl+r
+wait 600
+print-palette
+type _
+key Escape
+key ctrl+r
+wait 600
+type ERR
+key Return
+print-state
+key ctrl+.
+wait 600
+print-palette
+key Return
+wait 300
+print-doc
+key ctrl+.
+wait 600
+print-palette
+key Return
+wait 800
+print-doc
+key ctrl+Home
+key Down
+key Down
+key Down
+key Down
+key Home
+key ctrl+Right
+key ctrl+Right
+print-state
+key F2
+print-palette
+type bad
+key Return
+wait 600
+print-toast
+key F2
+type app
+key Return
+wait 800
+print-toast
+print-tabs
+print-doc
+key ctrl+Tab
+print-doc
+open proj/fmt.go
+wait 800
+print-state
+key shift+alt+f
+wait 600
+print-toast
+print-doc
