@@ -1,7 +1,8 @@
 # lsp
 
-Language servers for [rhun](https://rhun.app): diagnostics in the gutter and the status bar,
-hover text when the pointer rests on a symbol, and **Go to Definition** (F12). One server per
+Language servers for [rhun](https://rhun.app): completion lists as you type (`ctrl+space` for
+one at once), signature help inside a call (`ctrl+shift+space`), diagnostics in the gutter and
+the status bar, hover text when the pointer rests on a symbol, and **Go to Definition** (F12). One server per
 language per project, started when the first document of the language opens, run from the
 project folder. Nothing is downloaded: the extension runs the server you already have on your
 `PATH`:

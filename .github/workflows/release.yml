@@ -1,0 +1,52 @@
+# A tag vX.Y.Z (equal to version in extension.ini) builds the extension for Linux, macOS and
+# Windows and publishes what rhun's Install from GitHub takes (https://rhun.app/extensions/v1/,
+# section 11): NAME-TARGET.tar.gz, the extension folder's contents at its top level, and
+# sha256sums.txt covering them.
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: Tests
+        run: go vet ./... && go test ./...
+      - name: The tag is the manifest's version
+        run: test "${GITHUB_REF_NAME#v}" = "$(sed -n 's/^version *= *//p' extension.ini | head -1)"
+      - name: Build and pack
+        run: |
+          set -e
+          name=$(sed -n 's/^name *= *//p' extension.ini | head -1)
+          icon=$(sed -n 's/^icon *= *//p' extension.ini | head -1)
+          mkdir -p dist
+          for t in linux-x86_64:linux:amd64 macos-arm64:darwin:arm64 windows-x64:windows:amd64; do
+            target=${t%%:*}; rest=${t#*:}; goos=${rest%%:*}; goarch=${rest#*:}
+            exe=""; if [ "$goos" = windows ]; then exe=.exe; fi
+            stage=$(mktemp -d)
+            mkdir -p "$stage/bin"
+            CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -trimpath -ldflags=-s -o "$stage/bin/$name-$target$exe" .
+            cp extension.ini README.md LICENSE "$stage/"
+            if [ -n "$icon" ]; then cp "$icon" "$stage/"; fi
+            for d in themes syntax; do if [ -d "$d" ]; then cp -R "$d" "$stage/"; fi; done
+            tar -czf "dist/$name-$target.tar.gz" -C "$stage" .
+          done
+          (cd dist && sha256sum *.tar.gz > sha256sums.txt)
+          cat dist/sha256sums.txt
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*.tar.gz
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" \
+            --notes "Install it in rhun: the extensions button in the title bar, then Install from GitHub, then ${GITHUB_REPOSITORY}."

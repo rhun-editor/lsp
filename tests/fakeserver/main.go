@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode"
 	"unicode/utf16"
 )
 
@@ -56,7 +57,8 @@ func main() {
 		json.Unmarshal(body, &msg)
 		switch msg.Method {
 		case "initialize":
-			reply(msg.ID, map[string]any{"capabilities": map[string]any{"textDocumentSync": 2, "hoverProvider": true, "definitionProvider": true}})
+			reply(msg.ID, map[string]any{"capabilities": map[string]any{"textDocumentSync": 2, "hoverProvider": true, "definitionProvider": true,
+				"completionProvider": map[string]any{"triggerCharacters": []string{"."}}, "signatureHelpProvider": map[string]any{"triggerCharacters": []string{"(", ","}}}})
 		case "shutdown":
 			reply(msg.ID, nil)
 		case "exit":
@@ -110,6 +112,53 @@ func main() {
 			} else {
 				reply(msg.ID, map[string]any{"contents": map[string]any{"kind": "markdown", "value": "```go\nfake: " + w + "\n```"}})
 			}
+		case "textDocument/completion":
+			var p struct {
+				TextDocument struct {
+					URI string `json:"uri"`
+				} `json:"textDocument"`
+				Position position `json:"position"`
+			}
+			json.Unmarshal(msg.Params, &p)
+			// the word before the cursor is what the items replace
+			text := docs[p.TextDocument.URI]
+			off := offset(text, p.Position)
+			start := off
+			for start > 0 && (unicode.IsLetter(text[start-1]) || unicode.IsDigit(text[start-1]) || text[start-1] == '_') {
+				start--
+			}
+			word := rng{Start: position{p.Position.Line, p.Position.Character - (off - start)}, End: p.Position}
+			reply(msg.ID, map[string]any{"isIncomplete": false, "items": []map[string]any{
+				{"label": "Sprint", "kind": 3, "sortText": "3", "additionalTextEdits": []map[string]any{
+					{"range": rng{position{0, 0}, position{0, 0}}, "newText": "// imported\n"}}},
+				{"label": "Println", "kind": 3, "sortText": "1", "detail": "func(a ...any) (n int, err error)",
+					"documentation": map[string]any{"kind": "markdown", "value": "Println formats using the **default** formats."},
+					"textEdit":      map[string]any{"range": word, "newText": "Println"}},
+				{"label": "Printf", "kind": 3, "sortText": "2", "insertText": "Printf"},
+				{"label": "for", "kind": 15, "sortText": "4", "insertTextFormat": 2, "insertText": "for ${1:i} := range ${2:n} {\n\t$0\n}"},
+			}})
+		case "textDocument/signatureHelp":
+			var p struct {
+				TextDocument struct {
+					URI string `json:"uri"`
+				} `json:"textDocument"`
+				Position position `json:"position"`
+			}
+			json.Unmarshal(msg.Params, &p)
+			text := docs[p.TextDocument.URI]
+			off := offset(text, p.Position)
+			ls := off
+			for ls > 0 && text[ls-1] != '\n' {
+				ls--
+			}
+			before := string(text[ls:off])
+			if strings.Count(before, "(") <= strings.Count(before, ")") {
+				reply(msg.ID, nil)
+				break
+			}
+			reply(msg.ID, map[string]any{"activeSignature": 0, "activeParameter": strings.Count(before[strings.LastIndex(before, "("):], ","),
+				"signatures": []map[string]any{{"label": "func Println(a ...any, sep string)", "documentation": "Println prints.",
+					"parameters": []map[string]any{{"label": []int{13, 21}}, {"label": "sep string"}}}}})
 		case "textDocument/definition":
 			var p struct {
 				TextDocument struct {

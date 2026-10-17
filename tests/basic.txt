@@ -23,3 +23,22 @@ key ctrl+End
 cmd lsp.definition
 wait 300
 print-state
+key ctrl+Home
+key Down
+key Down
+key Down
+key Down
+key End
+key Return
+type fmt.Pr
+wait 600
+print-complete
+key Down
+key Return
+wait 100
+type (x, 
+wait 600
+print-complete
+key Escape
+key Escape
+print-doc

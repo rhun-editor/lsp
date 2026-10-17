@@ -1,6 +1,7 @@
 // lsp: language servers for rhun. One server per language per project (gopls, rust-analyzer,
 // typescript-language-server, pyright, clangd, …), started when a document of the language opens;
-// diagnostics in the gutter, hover text when the pointer rests, Go to Definition (F12).
+// diagnostics in the gutter, hover text when the pointer rests, Go to Definition (F12), completion
+// lists as you type and signature help inside a call (complete.go).
 // Documents are kept in step with rhun through the edits stream (section 6a of the protocol) and
 // sent to the server incrementally. Settings: $RHUN_STATE/lsp.ini.
 // Protocol: https://rhun.app/extensions/v1/
@@ -423,6 +424,11 @@ func (s *server) start() {
 				"publishDiagnostics": map[string]any{"versionSupport": true},
 				"hover":              map[string]any{"contentFormat": []string{"plaintext", "markdown"}},
 				"definition":         map[string]any{"linkSupport": true},
+				"completion": map[string]any{"contextSupport": true, "completionItem": map[string]any{
+					"snippetSupport": false, "documentationFormat": []string{"plaintext", "markdown"}}},
+				"signatureHelp": map[string]any{"contextSupport": true, "signatureInformation": map[string]any{
+					"documentationFormat":  []string{"plaintext", "markdown"},
+					"parameterInformation": map[string]any{"labelOffsetSupport": true}, "activeParameterSupport": true}},
 			},
 			"general": map[string]any{"positionEncodings": []string{"utf-16"}},
 		},
@@ -769,7 +775,7 @@ func argOr(ev rhunext.Event, i int) string {
 }
 
 func main() {
-	if err := rhunext.Run(&lsp{}); err != nil {
+	if err := rhunext.RunWith([]string{rhunext.FeatureComplete, rhunext.FeatureSignature}, &lsp{}); err != nil {
 		os.Exit(1)
 	}
 }
