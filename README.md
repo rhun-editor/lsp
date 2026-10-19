@@ -178,7 +178,8 @@ connection, with a 500 ms limit for pipes held open by descendant processes.
 ## Needs
 
 Documents: write (completion, code actions, rename and formatting can edit documents). Project:
-read (the server reads the project). Run: the servers above, by name; no network.
+read (the server reads the project). Run: the servers above, by name, and `go`, which gopls
+runs to load the packages (without it gopls answers "no views"); no network.
 
 ## Build and test
 
