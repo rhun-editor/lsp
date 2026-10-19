@@ -11,7 +11,9 @@
 // (the whole document, a range, or the line before a newline typed). Protocol 1.1: references come
 // with a partial result and work-done progress when the client passes tokens, prepareRename
 // answers the word's range and placeholder (null on a keyword), declaration is the word's first
-// occurrence and the implementations are the func lines (as LocationLinks).
+// occurrence and the implementations are the func lines (as LocationLinks), the call hierarchy
+// of a func is its callers and callees in the same file; ERR diagnostics carry a code, a link and
+// (after the first) the first one as related information.
 package main
 
 import (
@@ -71,8 +73,8 @@ func main() {
 				"renameProvider": map[string]any{"prepareProvider": true}, "declarationProvider": true, "implementationProvider": true,
 				"documentFormattingProvider": true, "documentRangeFormattingProvider": true,
 				"documentOnTypeFormattingProvider": map[string]any{"firstTriggerCharacter": "\n", "moreTriggerCharacter": []string{"}", "@"}},
-				"executeCommandProvider":           map[string]any{"commands": []string{"fake.comment"}},
-				"completionProvider":               map[string]any{"triggerCharacters": []string{"."}}, "signatureHelpProvider": map[string]any{"triggerCharacters": []string{"(", ","}}}})
+				"executeCommandProvider":           map[string]any{"commands": []string{"fake.comment"}}, "callHierarchyProvider": true,
+				"completionProvider": map[string]any{"triggerCharacters": []string{"."}}, "signatureHelpProvider": map[string]any{"triggerCharacters": []string{"(", ","}}}})
 		case "shutdown":
 			reply(msg.ID, nil)
 		case "exit":
@@ -306,6 +308,46 @@ func main() {
 				}
 			}
 			reply(msg.ID, edits)
+		case "textDocument/prepareCallHierarchy":
+			// the func whose name is under the cursor
+			var p struct {
+				TextDocument struct {
+					URI string `json:"uri"`
+				} `json:"textDocument"`
+				Position position `json:"position"`
+			}
+			json.Unmarshal(msg.Params, &p)
+			w := wordAt(docs[p.TextDocument.URI], p.Position)
+			if item := funcItem(p.TextDocument.URI, w); item != nil {
+				reply(msg.ID, []any{item})
+			} else {
+				reply(msg.ID, nil)
+			}
+		case "callHierarchy/incomingCalls", "callHierarchy/outgoingCalls":
+			// callers: the funcs whose bodies call the item, with each call's range; callees: the
+			// funcs the item's body calls
+			var p struct {
+				Item struct {
+					Name string `json:"name"`
+					URI  string `json:"uri"`
+				} `json:"item"`
+			}
+			json.Unmarshal(msg.Params, &p)
+			calls := []map[string]any{}
+			for _, f := range funcs(p.Item.URI) {
+				if msg.Method == "callHierarchy/incomingCalls" {
+					if sites := f.calls[p.Item.Name]; len(sites) > 0 {
+						calls = append(calls, map[string]any{"from": funcItem(p.Item.URI, f.name), "fromRanges": sites})
+					}
+				} else if f.name == p.Item.Name {
+					for _, callee := range funcs(p.Item.URI) {
+						if sites := f.calls[callee.name]; len(sites) > 0 {
+							calls = append(calls, map[string]any{"to": funcItem(p.Item.URI, callee.name), "fromRanges": sites})
+						}
+					}
+				}
+			}
+			reply(msg.ID, calls)
 		case "textDocument/documentSymbol":
 			var p struct {
 				TextDocument struct {
@@ -428,6 +470,56 @@ func symbols(text []rune) []map[string]any {
 	return out
 }
 
+// fakeFunc is a "func NAME" of a document: its line and the calls "OTHER(" in its body
+type fakeFunc struct {
+	name  string
+	line  int
+	calls map[string][]rng
+}
+
+func funcs(uri string) []fakeFunc {
+	var out []fakeFunc
+	for i, line := range strings.Split(string(docs[uri]), "\n") {
+		if rest, ok := strings.CutPrefix(line, "func "); ok {
+			out = append(out, fakeFunc{name: rest[:strings.IndexAny(rest+"(", "( ")], line: i, calls: map[string][]rng{}})
+			continue
+		}
+		if len(out) == 0 {
+			continue
+		}
+		f := out[len(out)-1]
+		for from := 0; ; {
+			j := strings.Index(line[from:], "(")
+			if j < 0 {
+				break
+			}
+			end := from + j
+			start := end
+			for start > 0 && (unicode.IsLetter(rune(line[start-1])) || unicode.IsDigit(rune(line[start-1])) || line[start-1] == '_') {
+				start--
+			}
+			if start < end {
+				f.calls[line[start:end]] = append(f.calls[line[start:end]], rng{position{i, utf16units(line[:start])}, position{i, utf16units(line[:end])}})
+			}
+			from = end + 1
+		}
+	}
+	return out
+}
+
+// funcItem is the CallHierarchyItem of a func of the document, nil when there is none
+func funcItem(uri, name string) map[string]any {
+	lines := strings.Split(string(docs[uri]), "\n")
+	for _, f := range funcs(uri) {
+		if f.name == name {
+			return map[string]any{"name": name, "kind": 12, "detail": "func()", "uri": uri,
+				"range":          rng{position{f.line, 0}, position{f.line, utf16units(lines[f.line])}},
+				"selectionRange": rng{position{f.line, 5}, position{f.line, 5 + len(name)}}, "data": map[string]any{"fake": name}}
+		}
+	}
+	return nil
+}
+
 func offset(text []rune, p position) int {
 	off, line := 0, 0
 	for off < len(text) && line < p.Line {
@@ -472,6 +564,7 @@ func wordAt(text []rune, p position) string {
 func publish(uri string) {
 	text := docs[uri]
 	var diags []map[string]any
+	var first any
 	line, col := 0, 0
 	lines := strings.Split(string(text), "\n")
 	for line = range lines {
@@ -484,10 +577,20 @@ func publish(uri string) {
 				continue
 			}
 			start := utf16units(lines[line][:col])
-			diags = append(diags, map[string]any{
+			d := map[string]any{
 				"range":    rng{position{line, start}, position{line, start + len(word.w)}},
 				"severity": word.sev, "source": "fake", "message": word.w + " here",
-			})
+			}
+			if word.w == "ERR" {
+				d["code"] = "E1"
+				d["codeDescription"] = map[string]any{"href": "https://example.org/E1"}
+				if first != nil {
+					d["relatedInformation"] = []any{map[string]any{"location": map[string]any{"uri": uri, "range": first}, "message": "first ERR"}}
+				} else {
+					first = d["range"]
+				}
+			}
+			diags = append(diags, d)
 		}
 	}
 	if diags == nil {

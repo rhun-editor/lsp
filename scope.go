@@ -240,7 +240,7 @@ func (l *lsp) startScopeWorker() {
 			want := l.scopeValues(l.scopeLanguages())
 			for _, k := range append(scopeKeyNames(), "type_format.triggers") {
 				v, ok := want[k]
-				if !ok || sent[k] == v || (sent[k] == "" && v == "*") {
+				if !ok || sent[k] == v || (sent[k] == "" && v == "*") || l.isStopping() {
 					continue
 				}
 				var err error
@@ -261,6 +261,12 @@ func (l *lsp) startScopeWorker() {
 		}
 	}()
 	l.scopeChanged()
+}
+
+func (l *lsp) isStopping() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.stopping
 }
 
 func scopeKeyNames() []string {

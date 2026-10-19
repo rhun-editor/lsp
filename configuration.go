@@ -289,6 +289,9 @@ func (s *server) requestResult(method string, params json.RawMessage) (any, int,
 		return s.registerCapabilities(params)
 	case "client/unregisterCapability":
 		return s.unregisterCapabilities(params)
+	case "workspace/diagnostic/refresh":
+		go s.l.repull(s)
+		return nil, 0, ""
 	case "workspace/configuration":
 		var p struct {
 			Items *[]struct {

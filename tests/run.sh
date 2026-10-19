@@ -46,7 +46,7 @@ check basic
 # the language features change the files: a fresh copy of the project
 printf 'package main\n\nfunc other() {}\n' > "$work/proj/other.go"
 printf 'package main\n\n// TODO first\nfunc main() {\n\tERR := 1\n\t_ = ERR\n}\n' > "$work/proj/main.go"
-run tests/lang.txt | sed 's/pid=[1-9][0-9]*/pid=PID/' > "$work/out.txt"
+run tests/lang.txt | sed -e 's/pid=[1-9][0-9]*/pid=PID/' -e "s|$work|WORK|g" > "$work/out.txt"
 check lang
 
 # protocol 1.1: every server but the fake turned off, so the scope does not depend on what this
@@ -59,7 +59,8 @@ for lang in Rust TypeScript JavaScript Python C C++ Zig Lua Ruby Dart Kotlin Swi
 done
 cp "$work/config/rhun/config" "$work/config.saved"
 printf '\n[editor]\nformat_on_type = yes\n' >> "$work/config/rhun/config"
-run tests/lang11.txt | sed 's/pid=[1-9][0-9]*/pid=PID/' > "$work/out.txt"
+printf 'package main\n\nfunc leaf() {}\n\nfunc caller() {\n\tleaf()\n\tleaf()\n}\n' > "$work/proj/calls.go"
+run tests/lang11.txt | sed -e 's/pid=[1-9][0-9]*/pid=PID/' -e "s|$work|WORK|g" > "$work/out.txt"
 check lang11
 cp "$work/config.saved" "$work/config/rhun/config"
 rm "$state/lsp.ini"

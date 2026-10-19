@@ -14,18 +14,20 @@ hover = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cx
 declaration = *.go
 implementation = *.go
 selection_ranges = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css
-call_hierarchy = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css
-type_hierarchy = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css
+call_hierarchy = *.go
 workspace_symbols = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css
 range_format = *.go
 type_format = *.go
 type_format.triggers = newline }
 document_links = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css
+problem path=WORK/proj/main.go line=3 col=4 end=3:8 severity=warning code=fake source=rhun-editor/lsp message=TODO here
+problem path=WORK/proj/main.go line=5 col=2 end=5:5 severity=error code=fake(E1) source=rhun-editor/lsp message=ERR here
+problem path=WORK/proj/main.go line=6 col=6 end=6:9 severity=error code=fake(E1) source=rhun-editor/lsp message=ERR here
 tabs=1 active=main.go line=6 col=11 sel=0 dirty=0 lang=Go focus=0 theme=rhun-dark
-choose=Go to reference
-field=
-> main.go:5  ERR := 1
-  main.go:6  _ = ERR
+set=1/1 kind=references cur=-1 title=2 references to ERR
+row 0 y=372 d=0 open id=fWORK/proj/main.go label=main.go badge=2 icon=3
+row 1 y=400 d=1 leaf id=WORK/proj/main.go5:2-5:5 label=5:2  ERR := 1
+row 2 y=428 d=1 leaf id=WORK/proj/main.go6:6-6:9 label=6:6  _ = ERR
 tabs=1 active=main.go line=5 col=8 sel=3 dirty=0 lang=Go focus=0 theme=rhun-dark
 tabs=1 active=main.go line=4 col=10 sel=4 dirty=0 lang=Go focus=0 theme=rhun-dark
 toast=Nothing to rename here
@@ -56,3 +58,6 @@ func f() {
 }
 
 <eod>
+set=2/2 kind=calls-in cur=-1 title=Incoming calls of leaf
+row 0 y=372 d=0 open cur id=h0 label=leaf desc=func()  calls.go:3
+row 1 y=400 d=1 closed id=h1 label=caller desc=func()  calls.go:5  (2 calls)

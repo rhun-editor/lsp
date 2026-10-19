@@ -1,14 +1,14 @@
 rhun-editor/lsp state=idle pid=0 cmds=lsp.restart,lsp.reload_configuration,lsp.cancel_progress confined=0
 ext=lsp state=running
 rhun-editor/lsp state=running pid=PID cmds=lsp.restart,lsp.reload_configuration,lsp.cancel_progress confined=1 status=gopls
-3 4 3 8 warning rhun-editor/lsp fake: TODO here
-5 2 5 5 error rhun-editor/lsp fake: ERR here
-6 6 6 9 error rhun-editor/lsp fake: ERR here
+3 4 3 8 warning problems:rhun-editor/lsp TODO here
+5 2 5 5 error problems:rhun-editor/lsp ERR here
+6 6 6 9 error problems:rhun-editor/lsp ERR here
 errors=2 warnings=1
 hover=1 5 2 sent=1 text=fake: ERR
-4 4 4 8 warning rhun-editor/lsp fake: TODO here
-6 2 6 5 error rhun-editor/lsp fake: ERR here
-7 6 7 9 error rhun-editor/lsp fake: ERR here
+4 4 4 8 warning problems:rhun-editor/lsp TODO here
+6 2 6 5 error problems:rhun-editor/lsp ERR here
+7 6 7 9 error problems:rhun-editor/lsp ERR here
 errors=2 warnings=1
 tabs=1 active=main.go line=4 col=1 sel=0 dirty=1 lang=Go focus=0 theme=rhun-dark
 tabs=1 active=main.go line=1 col=1 sel=0 dirty=1 lang=Go focus=0 theme=rhun-dark

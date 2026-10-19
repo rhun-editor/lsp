@@ -112,12 +112,21 @@ type workReport struct {
 	Percentage *int   `json:"percentage"`
 }
 
-// streamQuery sends a request of q's server and forwards what the server streams for it: partial
-// results through convert and send as parts of out (when rhun agreed query-stream and takes
-// them; otherwise they are carried into the answer), work-done reports as out's progress. It
-// returns the final result and the carried items.
+// streamQuery sends a request about q's document; see streamCall
 func streamQuery[T any](l *lsp, q *documentQuery, out *rhunext.Stream, lim queryLimits, method string, params map[string]any,
 	convert func(json.RawMessage) []T, send func(*rhunext.Stream, []T) error) (json.RawMessage, []T, error) {
+	call := func(ctx context.Context) (json.RawMessage, error) { return q.requestContext(ctx, method, params) }
+	return streamCall(l, q.server, out, lim, params, call, convert, send)
+}
+
+// streamCall sends a request of server s (call, with params it may still add tokens to) and
+// forwards what the server streams for it: partial results through convert and send as parts of
+// out (when rhun agreed query-stream and takes them; otherwise they are carried into the
+// answer), work-done reports as out's progress. It returns the final result and the carried
+// items.
+func streamCall[T any](l *lsp, s *server, out *rhunext.Stream, lim queryLimits, params map[string]any,
+	call func(context.Context) (json.RawMessage, error), convert func(json.RawMessage) []T,
+	send func(*rhunext.Stream, []T) error) (json.RawMessage, []T, error) {
 	parent := context.Background()
 	if out != nil && out.Context != nil {
 		parent = out.Context
@@ -136,8 +145,8 @@ func streamQuery[T any](l *lsp, q *documentQuery, out *rhunext.Stream, lim query
 	var feed *queryFeed
 	var wake chan struct{}
 	if streaming {
-		partial, work, f := q.server.openFeed()
-		defer q.server.closeFeed(partial, work)
+		partial, work, f := s.openFeed()
+		defer s.closeFeed(partial, work)
 		params["partialResultToken"] = partial
 		params["workDoneToken"] = work
 		feed, wake = f, f.wake
@@ -148,7 +157,7 @@ func streamQuery[T any](l *lsp, q *documentQuery, out *rhunext.Stream, lim query
 	}
 	done := make(chan answer, 1)
 	go func() {
-		res, err := q.requestContext(ctx, method, params)
+		res, err := call(ctx)
 		done <- answer{res, err}
 	}()
 	var carried []T

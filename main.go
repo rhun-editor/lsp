@@ -113,6 +113,12 @@ type lsp struct {
 	actionsMu                      sync.Mutex // code actions waiting to be chosen (codeactions.go)
 	actionSerial                   uint64
 	actionSets                     map[uint64][]actionData
+	diagOwner                      map[string]*server // which server's set rhun has for a file (diagnostics.go)
+	diagMu                         sync.Mutex
+	diagJobs                       []diagnosticsJob
+	diagRunning                    bool
+	pullMu                         sync.Mutex
+	pulls                          map[*document]*pullState
 }
 
 func (l *lsp) Ready(ext *rhunext.Ext, project string) {
@@ -406,26 +412,23 @@ func (s *server) read(br *bufio.Reader) {
 	}
 }
 
+// publish takes textDocument/publishDiagnostics: kept for code actions, given to rhun as the file's
+// set (file-diagnostics) or as the open document's v1 diagnostics
 func (s *server) publish(params json.RawMessage) {
 	var p struct {
-		URI         string `json:"uri"`
-		Diagnostics []struct {
-			Range    lspRange `json:"range"`
-			Severity int      `json:"severity"`
-			Message  string   `json:"message"`
-			Source   string   `json:"source"`
-		} `json:"diagnostics"`
+		URI         string            `json:"uri"`
+		Diagnostics []json.RawMessage `json:"diagnostics"`
 	}
 	if json.Unmarshal(params, &p) != nil {
 		return
 	}
-	var raw struct {
-		Diagnostics []json.RawMessage `json:"diagnostics"`
+	path := uriPath(p.URI)
+	kept, rich := s.l.keepFileDiagnostics(s, path, p.Diagnostics)
+	if rich {
+		return
 	}
-	json.Unmarshal(params, &raw)
 	s.l.mu.Lock()
-	s.l.diags[uriPath(p.URI)] = keepDiagnostics(raw.Diagnostics)
-	d := s.l.byPath[uriPath(p.URI)]
+	d := s.l.byPath[path]
 	var text []byte
 	var version int64
 	if d != nil {
@@ -435,28 +438,7 @@ func (s *server) publish(params json.RawMessage) {
 	if d == nil || text == nil {
 		return
 	}
-	ds := make([]rhunext.Diagnostic, 0, len(p.Diagnostics))
-	for _, x := range p.Diagnostics {
-		sev := rhunext.SevError
-		switch x.Severity {
-		case 2:
-			sev = rhunext.SevWarning
-		case 3:
-			sev = rhunext.SevInfo
-		case 4:
-			sev = rhunext.SevHint
-		}
-		msg := x.Message
-		if i := strings.IndexByte(msg, '\n'); i > 0 {
-			msg = msg[:i]
-		}
-		if x.Source != "" {
-			msg = x.Source + ": " + msg
-		}
-		ds = append(ds, rhunext.Diagnostic{Range: rhunext.Range{Start: rhunPos(text, x.Range.Start), End: rhunPos(text, x.Range.End)},
-			Severity: sev, Message: msg})
-	}
-	if err := s.l.ext.Diagnostics(d.id, version, ds); err != nil {
+	if err := s.l.ext.Diagnostics(d.id, version, plainDiagnostics(kept, text)); err != nil {
 		// stale: the user typed meanwhile; the server will publish again after the didChange
 		s.l.ext.Logf("diagnostics: %v", err)
 	}
@@ -606,8 +588,11 @@ func (l *lsp) has(feature string) bool { return l.ext != nil && l.ext.Has(featur
 // completionCapabilities is the client's completion capabilities: snippets only when rhun
 // agreed native snippet fields, and the item properties complete-items carries
 func (l *lsp) completionCapabilities() map[string]any {
-	item := map[string]any{"snippetSupport": l.has(rhunext.FeatureSnippets),
-		"documentationFormat": []string{"plaintext", "markdown"}}
+	formats := []string{"plaintext", "markdown"}
+	if l.has(featureMarkdown) {
+		formats = []string{"markdown", "plaintext"}
+	}
+	item := map[string]any{"snippetSupport": l.has(rhunext.FeatureSnippets), "documentationFormat": formats}
 	caps := map[string]any{"contextSupport": true, "completionItem": item}
 	if l.has(rhunext.FeatureCompleteItems) {
 		item["insertReplaceSupport"] = true
@@ -692,6 +677,9 @@ func (l *lsp) clientCapabilities(watch bool) map[string]any {
 		workspace["symbol"] = map[string]any{"symbolKind": map[string]any{"valueSet": kinds},
 			"tagSupport": map[string]any{"valueSet": []int{1}}, "resolveSupport": map[string]any{"properties": []string{"location.range"}}}
 	}
+	if l.has(rhunext.FeatureFileDiagnostics) {
+		workspace["diagnostics"] = map[string]any{"refreshSupport": true}
+	}
 	if watch {
 		workspace["didChangeWatchedFiles"] = map[string]any{"dynamicRegistration": true, "relativePatternSupport": true}
 	}
@@ -727,10 +715,14 @@ func main() {
 		rhunext.FeatureReferences, rhunext.FeatureSymbols, rhunext.FeatureActions, rhunext.FeatureRename, rhunext.FeatureFormat, rhunext.FeatureSaveActions, rhunext.FeatureWorkspaceWatch,
 		// protocol 1.1: native snippet fields, completion items, overloads, streaming and narrowing,
 		// declaration/type definition/implementation, prepare-rename, range and on-type formatting,
-		// code actions with kinds and resolve
+		// code actions with kinds and resolve,
 		rhunext.FeatureSnippets, rhunext.FeatureSnippetVariants, rhunext.FeatureSnippetTransforms,
 		rhunext.FeatureCompleteItems, rhunext.FeatureSignatureList, rhunext.FeatureQueryStream, rhunext.FeatureProviderScope,
-		rhunext.FeatureNavigation, rhunext.FeaturePrepareRename, rhunext.FeaturePartialFormat, rhunext.FeatureCodeActions}
+		rhunext.FeatureNavigation, rhunext.FeaturePrepareRename, rhunext.FeaturePartialFormat, rhunext.FeatureCodeActions,
+		// the hover card, Expand Selection, hierarchies, Go to Symbol in Project, links, the
+		// Problems store, and Markdown documentation where rhun renders it
+		rhunext.FeatureHoverQuery, rhunext.FeatureSelectionRanges, rhunext.FeatureHierarchy, rhunext.FeatureWorkspaceSymbols,
+		rhunext.FeatureDocumentLinks, rhunext.FeatureFileDiagnostics, featureMarkdown}
 	l := &lsp{}
 	err := rhunext.RunWith(features, l)
 	l.shutdown()

@@ -15,7 +15,7 @@ key Home
 print-state
 key shift+F12
 wait 600
-print-palette
+print-results
 key Escape
 key ctrl+r
 wait 600

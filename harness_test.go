@@ -74,6 +74,20 @@ func (f *fakeLSP) await(method string) map[string]any {
 	return nil
 }
 
+// awaitN waits until the extension sent n messages of the method and returns the nth
+func (f *fakeLSP) awaitN(method string, n int) map[string]any {
+	f.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if m := f.messages(method); len(m) >= n {
+			return m[n-1]
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	f.t.Fatalf("fewer than %d %s", n, method)
+	return nil
+}
+
 func (f *fakeLSP) serve(r io.Reader) {
 	br := bufio.NewReader(r)
 	for {
@@ -150,7 +164,7 @@ type fakeHost struct {
 
 // the extension's requests that carry a body: LEN is their last field
 var bodiedVerbs = map[string]bool{"toast": true, "status": true, "query-part": true, "query-progress": true,
-	"apply": true, "file-diagnostics": true}
+	"apply": true, "file-diagnostics": true, "diagnostics": true, "hover": true, "replace": true, "insert": true, "choose": true}
 
 func (h *fakeHost) write(s string) {
 	h.wmu.Lock()
@@ -297,7 +311,24 @@ func newHarness(t *testing.T, features []string, caps, text string,
 	case <-time.After(5 * time.Second):
 		t.Fatal("no features event")
 	}
-	s := newServer(l, "Go", []string{"fake"})
+	s, srv := addFakeServer(t, l, "Go", caps, handle)
+	d := &document{id: 1, version: 1, lang: "Go", path: harnessPath, text: []byte(text), server: s,
+		syncedServer: s, syncedVersion: 1, opened: true, lspVer: 1}
+	l.docs = map[rhunext.Doc]*document{1: d}
+	l.byPath = map[string]*document{d.path: d}
+	l.diags = map[string]*keptDiagnostics{}
+	t.Cleanup(func() {
+		hostW.Close()
+		extW.Close()
+	})
+	return &harness{l: l, s: s, d: d, host: h, srv: srv}
+}
+
+// addFakeServer runs a fake server for a language, initialized with the capabilities
+func addFakeServer(t *testing.T, l *lsp, lang, caps string,
+	handle func(f *fakeLSP, method string, id, params json.RawMessage) (any, bool)) (*server, *fakeLSP) {
+	t.Helper()
+	s := newServer(l, lang, []string{"fake"})
 	srvInR, srvInW := io.Pipe()
 	srvOutR, srvOutW := io.Pipe()
 	s.in = srvInW
@@ -308,19 +339,14 @@ func newHarness(t *testing.T, features []string, caps, text string,
 		t.Fatal(err)
 	}
 	s.ready.Store(true)
-	l.servers["Go"] = s
-	d := &document{id: 1, version: 1, lang: "Go", path: harnessPath, text: []byte(text), server: s,
-		syncedServer: s, syncedVersion: 1, opened: true, lspVer: 1}
-	l.docs = map[rhunext.Doc]*document{1: d}
-	l.byPath = map[string]*document{d.path: d}
-	l.diags = map[string]*keptDiagnostics{}
+	l.mu.Lock()
+	l.servers[lang] = s
+	l.mu.Unlock()
 	t.Cleanup(func() {
 		s.stop()
-		hostW.Close()
-		extW.Close()
 		srvOutW.Close()
 	})
-	return &harness{l: l, s: s, d: d, host: h, srv: srv}
+	return s, srv
 }
 
 // ---- reading answers

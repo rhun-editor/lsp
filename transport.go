@@ -105,6 +105,7 @@ func (s *server) endServer(reason string) {
 	}
 	s.status(reason, true)
 	s.l.scopeChanged()
+	go s.l.dropDiagnostics(s)
 }
 
 func readRPC(br *bufio.Reader) ([]byte, error) {

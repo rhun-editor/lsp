@@ -142,7 +142,7 @@ func (l *lsp) Complete(ext *rhunext.Ext, req rhunext.Request) rhunext.Completion
 // when rhun agreed them and native snippet fields when it agreed snippets
 func (l *lsp) completionItem(ext *rhunext.Ext, it lspItem, defaults lspItemDefaults, text []byte,
 	word rhunext.Range, resolves bool, snip *snippetContext) rhunext.CompletionItem {
-	c := rhunext.CompletionItem{Range: word, Label: it.Label, Detail: it.Detail, Doc: docText(it.Documentation)}
+	c := rhunext.CompletionItem{Range: word, Label: it.Label, Detail: it.Detail, Doc: l.documentation(it.Documentation)}
 	if it.Kind > 0 && it.Kind < len(lspKinds) {
 		c.Kind = lspKinds[it.Kind]
 	}
@@ -275,7 +275,7 @@ func (l *lsp) ResolveCompletion(ext *rhunext.Ext, req rhunext.ResolveRequest) rh
 	if json.Unmarshal(res, &got) != nil {
 		return rhunext.Resolution{}
 	}
-	out := rhunext.Resolution{Doc: docText(got.Documentation)}
+	out := rhunext.Resolution{Doc: l.documentation(got.Documentation)}
 	if got.Detail != "" && got.Detail != it.Detail {
 		out.Detail, out.HasDetail = got.Detail, true
 	}
@@ -345,9 +345,9 @@ func (l *lsp) signatureHelp(req rhunext.Request) *lspSignatureHelp {
 }
 
 // signatureInfo is overload n with its active parameter's bytes
-func (h *lspSignatureHelp) signatureInfo(n int) rhunext.SignatureInfo {
+func (h *lspSignatureHelp) signatureInfo(n int, doc func(json.RawMessage) string) rhunext.SignatureInfo {
 	sig := h.Signatures[n]
-	out := rhunext.SignatureInfo{Label: sig.Label, ActiveFrom: -1, ActiveTo: -1, Doc: docText(sig.Documentation)}
+	out := rhunext.SignatureInfo{Label: sig.Label, ActiveFrom: -1, ActiveTo: -1, Doc: doc(sig.Documentation)}
 	active := h.ActiveParameter
 	if sig.ActiveParameter != nil {
 		active = sig.ActiveParameter
@@ -363,7 +363,7 @@ func (l *lsp) Signature(ext *rhunext.Ext, req rhunext.Request) *rhunext.Signatur
 	if help == nil {
 		return nil
 	}
-	info := help.signatureInfo(help.ActiveSignature)
+	info := help.signatureInfo(help.ActiveSignature, docText) // v1 help: plain text
 	return &rhunext.SignatureHelp{Signature: info.Label, ActiveFrom: info.ActiveFrom, ActiveTo: info.ActiveTo, Doc: info.Doc}
 }
 
@@ -378,7 +378,7 @@ func (l *lsp) Signatures(ext *rhunext.Ext, req rhunext.Request) *rhunext.Signatu
 		if i == 32 {
 			break
 		}
-		out.Signatures = append(out.Signatures, help.signatureInfo(i))
+		out.Signatures = append(out.Signatures, help.signatureInfo(i, l.documentation))
 	}
 	if out.Active >= len(out.Signatures) {
 		out.Active = 0
