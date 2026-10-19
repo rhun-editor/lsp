@@ -7,7 +7,11 @@
 // in the open documents and in other.go beside the file; symbols are the funcs with their
 // variables as children; the code actions at an ERR are a quick fix (ERR to Err) and a command
 // that asks the client to apply an edit (a comment on line 1); rename edits every occurrence of
-// the word in the open documents and in other.go; formatting turns four leading spaces into a tab.
+// the word in the open documents and in other.go; formatting turns four leading spaces into a tab
+// (the whole document, a range, or the line before a newline typed). Protocol 1.1: references come
+// with a partial result and work-done progress when the client passes tokens, prepareRename
+// answers the word's range and placeholder (null on a keyword), declaration is the word's first
+// occurrence and the implementations are the func lines (as LocationLinks).
 package main
 
 import (
@@ -63,9 +67,12 @@ func main() {
 		switch msg.Method {
 		case "initialize":
 			reply(msg.ID, map[string]any{"capabilities": map[string]any{"textDocumentSync": 2, "hoverProvider": true, "definitionProvider": true,
-				"referencesProvider": true, "documentSymbolProvider": true, "codeActionProvider": true, "renameProvider": true,
-				"documentFormattingProvider": true, "executeCommandProvider": map[string]any{"commands": []string{"fake.comment"}},
-				"completionProvider": map[string]any{"triggerCharacters": []string{"."}}, "signatureHelpProvider": map[string]any{"triggerCharacters": []string{"(", ","}}}})
+				"referencesProvider": true, "documentSymbolProvider": true, "codeActionProvider": true,
+				"renameProvider": map[string]any{"prepareProvider": true}, "declarationProvider": true, "implementationProvider": true,
+				"documentFormattingProvider": true, "documentRangeFormattingProvider": true,
+				"documentOnTypeFormattingProvider": map[string]any{"firstTriggerCharacter": "\n", "moreTriggerCharacter": []string{"}", "@"}},
+				"executeCommandProvider":           map[string]any{"commands": []string{"fake.comment"}},
+				"completionProvider":               map[string]any{"triggerCharacters": []string{"."}}, "signatureHelpProvider": map[string]any{"triggerCharacters": []string{"(", ","}}}})
 		case "shutdown":
 			reply(msg.ID, nil)
 		case "exit":
@@ -213,12 +220,92 @@ func main() {
 				}
 			}
 			if msg.Method == "textDocument/references" {
+				var tokens struct {
+					Partial json.RawMessage `json:"partialResultToken"`
+					Work    json.RawMessage `json:"workDoneToken"`
+				}
+				json.Unmarshal(msg.Params, &tokens)
+				if len(tokens.Work) > 0 {
+					notify("$/progress", map[string]any{"token": tokens.Work, "value": map[string]any{"kind": "begin", "title": "Finding references", "percentage": 0}})
+					notify("$/progress", map[string]any{"token": tokens.Work, "value": map[string]any{"kind": "end"}})
+				}
+				if len(tokens.Partial) > 0 && len(locs) > 1 {
+					// the first location as a partial result, the rest in the answer
+					notify("$/progress", map[string]any{"token": tokens.Partial, "value": locs[:1]})
+					locs = locs[1:]
+				}
 				reply(msg.ID, locs)
 			} else if p.NewName == "bad" {
 				send(map[string]any{"jsonrpc": "2.0", "id": msg.ID, "error": map[string]any{"code": -32602, "message": "bad is not a good name"}})
 			} else {
 				reply(msg.ID, map[string]any{"changes": changes})
 			}
+		case "textDocument/prepareRename":
+			var p struct {
+				TextDocument struct {
+					URI string `json:"uri"`
+				} `json:"textDocument"`
+				Position position `json:"position"`
+			}
+			json.Unmarshal(msg.Params, &p)
+			text := docs[p.TextDocument.URI]
+			if w := wordAt(text, p.Position); w == "" || w == "package" || w == "func" {
+				reply(msg.ID, nil)
+			} else {
+				for _, r := range occurrences(text, w) {
+					if r.Start.Line == p.Position.Line && r.Start.Character <= p.Position.Character && p.Position.Character <= r.End.Character {
+						reply(msg.ID, map[string]any{"range": r, "placeholder": w})
+						break
+					}
+				}
+			}
+		case "textDocument/declaration", "textDocument/implementation":
+			// the declaration: the word's first occurrence; implementations: every func line
+			var p struct {
+				TextDocument struct {
+					URI string `json:"uri"`
+				} `json:"textDocument"`
+				Position position `json:"position"`
+			}
+			json.Unmarshal(msg.Params, &p)
+			text := docs[p.TextDocument.URI]
+			var locs []map[string]any
+			if msg.Method == "textDocument/declaration" {
+				if all := occurrences(text, wordAt(text, p.Position)); len(all) > 0 {
+					locs = append(locs, map[string]any{"uri": p.TextDocument.URI, "range": all[0]})
+				}
+			} else {
+				for i, line := range strings.Split(string(text), "\n") {
+					if strings.HasPrefix(line, "func ") {
+						locs = append(locs, map[string]any{"targetUri": p.TextDocument.URI, "targetRange": rng{position{i, 0}, position{i, len(line)}},
+							"targetSelectionRange": rng{position{i, 5}, position{i, 5 + strings.IndexAny(line[5:]+"(", "( ")}}})
+					}
+				}
+			}
+			reply(msg.ID, locs)
+		case "textDocument/rangeFormatting", "textDocument/onTypeFormatting":
+			// four leading spaces become a tab: on the lines of the range, or on the line before the
+			// cursor after a newline
+			var p struct {
+				TextDocument struct {
+					URI string `json:"uri"`
+				} `json:"textDocument"`
+				Range    rng      `json:"range"`
+				Position position `json:"position"`
+				Ch       string   `json:"ch"`
+			}
+			json.Unmarshal(msg.Params, &p)
+			from, to := p.Range.Start.Line, p.Range.End.Line
+			if msg.Method == "textDocument/onTypeFormatting" {
+				from, to = p.Position.Line-1, p.Position.Line-1
+			}
+			edits := []map[string]any{}
+			for i, line := range strings.Split(string(docs[p.TextDocument.URI]), "\n") {
+				if i >= from && i <= to && strings.HasPrefix(line, "    ") {
+					edits = append(edits, map[string]any{"range": rng{position{i, 0}, position{i, 4}}, "newText": "\t"})
+				}
+			}
+			reply(msg.ID, edits)
 		case "textDocument/documentSymbol":
 			var p struct {
 				TextDocument struct {

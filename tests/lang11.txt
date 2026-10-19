@@ -1,0 +1,58 @@
+# rhun PROJECT --headless --extensions DIR --script tests/lang11.txt (tests/run.sh sets it up, with
+# every server but the fake gopls turned off in lsp.ini): protocol 1.1's provider scope, references
+# with a partial result, declaration, implementation, a refused prepare-rename, Auto Fix through
+# code action kinds, Format Selection and formatting as you type
+wait 100
+open proj/main.go
+wait-ext lsp running
+wait 800
+print-provides rhun-editor/lsp
+key ctrl+Home
+key Down
+key Down
+key Down
+key Down
+key Down
+key End
+key Left
+print-state
+key shift+F12
+wait 600
+print-palette
+key Escape
+cmd declaration
+wait 400
+print-state
+key ctrl+F12
+wait 400
+print-state
+key ctrl+Home
+key F2
+wait 400
+print-toast
+print-palette
+key Escape
+key ctrl+Home
+key Down
+key Down
+key Down
+key Down
+key End
+cmd quick_fix_auto
+wait 600
+print-doc
+open proj/fmt.go
+wait 800
+key ctrl+Home
+key Down
+key Down
+key Down
+key shift+End
+key shift+alt+f
+wait 600
+print-doc
+key Down
+key End
+key Return
+wait 600
+print-doc

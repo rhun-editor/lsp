@@ -13,13 +13,61 @@ import (
 	"time"
 )
 
-var capabilityFields = map[string]string{
-	"textDocument/hover": "hoverProvider", "textDocument/completion": "completionProvider",
-	"textDocument/signatureHelp": "signatureHelpProvider", "textDocument/definition": "definitionProvider",
-	"textDocument/references": "referencesProvider", "textDocument/documentSymbol": "documentSymbolProvider",
-	"textDocument/codeAction": "codeActionProvider", "textDocument/rename": "renameProvider",
-	"textDocument/formatting": "documentFormattingProvider",
+// capabilityInfo is one of the server's services: its provider field in the initialize result,
+// the client capability (SECTION.NAME) that offers dynamic registration, and whether the provider
+// must be an options object (a bare true is invalid)
+type capabilityInfo struct {
+	field, client string
+	options       bool
 }
+
+// capabilityFields are the services by the method that asks for them (and that registers them)
+var capabilityFields = map[string]capabilityInfo{
+	"textDocument/hover":                {"hoverProvider", "textDocument.hover", false},
+	"textDocument/completion":           {"completionProvider", "textDocument.completion", true},
+	"textDocument/signatureHelp":        {"signatureHelpProvider", "textDocument.signatureHelp", true},
+	"textDocument/definition":           {"definitionProvider", "textDocument.definition", false},
+	"textDocument/references":           {"referencesProvider", "textDocument.references", false},
+	"textDocument/documentSymbol":       {"documentSymbolProvider", "textDocument.documentSymbol", false},
+	"textDocument/codeAction":           {"codeActionProvider", "textDocument.codeAction", false},
+	"textDocument/rename":               {"renameProvider", "textDocument.rename", false},
+	"textDocument/formatting":           {"documentFormattingProvider", "textDocument.formatting", false},
+	"textDocument/declaration":          {"declarationProvider", "textDocument.declaration", false},
+	"textDocument/typeDefinition":       {"typeDefinitionProvider", "textDocument.typeDefinition", false},
+	"textDocument/implementation":       {"implementationProvider", "textDocument.implementation", false},
+	"textDocument/selectionRange":       {"selectionRangeProvider", "textDocument.selectionRange", false},
+	"textDocument/prepareCallHierarchy": {"callHierarchyProvider", "textDocument.callHierarchy", false},
+	"textDocument/prepareTypeHierarchy": {"typeHierarchyProvider", "textDocument.typeHierarchy", false},
+	"workspace/symbol":                  {"workspaceSymbolProvider", "workspace.symbol", false},
+	"textDocument/rangeFormatting":      {"documentRangeFormattingProvider", "textDocument.rangeFormatting", false},
+	"textDocument/onTypeFormatting":     {"documentOnTypeFormattingProvider", "textDocument.onTypeFormatting", true},
+	"textDocument/documentLink":         {"documentLinkProvider", "textDocument.documentLink", true},
+	"textDocument/diagnostic":           {"diagnosticProvider", "textDocument.diagnostic", true},
+}
+
+// providerOption is the option of a provider that enables the requests that depend on it
+var providerOption = map[string]string{
+	"textDocument/codeAction": "resolveProvider", "textDocument/completion": "resolveProvider",
+	"workspace/symbol": "resolveProvider", "textDocument/documentLink": "resolveProvider",
+	"textDocument/rename": "prepareProvider",
+}
+
+// dependent requests: the service they belong to, and whether they need its option
+var dependent = map[string]struct {
+	base   string
+	option bool
+}{
+	"codeAction/resolve":          {"textDocument/codeAction", true},
+	"completionItem/resolve":      {"textDocument/completion", true},
+	"workspaceSymbol/resolve":     {"workspace/symbol", true},
+	"documentLink/resolve":        {"textDocument/documentLink", true},
+	"textDocument/prepareRename":  {"textDocument/rename", true},
+	"callHierarchy/incomingCalls": {"textDocument/prepareCallHierarchy", false},
+	"callHierarchy/outgoingCalls": {"textDocument/prepareCallHierarchy", false},
+	"typeHierarchy/supertypes":    {"textDocument/prepareTypeHierarchy", false},
+	"typeHierarchy/subtypes":      {"textDocument/prepareTypeHierarchy", false},
+}
+
 var errCapabilityUnavailable = errors.New("the language server does not provide this service for this document")
 
 type selectorDocument struct{ language, scheme, path string }
@@ -36,7 +84,8 @@ type capabilityRegistration struct {
 	method      string
 	selector    []documentFilter
 	cost        int
-	resolve     bool
+	resolve     bool     // the provider's option (providerOption): resolve or prepare
+	triggers    []string // onTypeFormatting's trigger characters
 	syncKind    int
 	includeText bool
 	watchers    []watchedFileRule
@@ -186,56 +235,89 @@ func (s *server) loadCapabilities(raw json.RawMessage) error {
 		return fmt.Errorf("invalid initialize capabilities")
 	}
 	static := map[string]bool{}
-	for method, field := range capabilityFields {
-		value := caps[field]
+	for method, info := range capabilityFields {
+		value := caps[info.field]
 		if len(value) == 0 || string(value) == "null" || string(value) == "false" {
 			continue
 		}
-		options := method == "textDocument/completion" || method == "textDocument/signatureHelp"
-		if _, err := jsonObject(value); err == nil || (!options && string(value) == "true") {
+		if _, err := jsonObject(value); err == nil || (!info.options && string(value) == "true") {
 			static[method] = true
 		} else if s.l.ext != nil {
-			s.l.ext.Logf("ignoring invalid %s capability", field)
+			s.l.ext.Logf("ignoring invalid %s capability", info.field)
 		}
+	}
+	options := map[string]bool{}
+	for method, option := range providerOption {
+		if o, err := jsonObject(caps[capabilityFields[method].field]); err == nil {
+			options[method] = string(o[option]) == "true"
+		}
+	}
+	var triggers []string
+	if o, err := jsonObject(caps["documentOnTypeFormattingProvider"]); err == nil {
+		triggers = typeTriggers(o)
 	}
 	s.capMu.Lock()
 	s.staticCapabilities = static
-	s.staticResolve = false
-	if options, err := jsonObject(caps["codeActionProvider"]); err == nil {
-		s.staticResolve = string(options["resolveProvider"]) == "true"
-	}
-	s.staticCompletionResolve = false
-	if options, err := jsonObject(caps["completionProvider"]); err == nil {
-		s.staticCompletionResolve = string(options["resolveProvider"]) == "true"
-	}
+	s.staticOptions = options
+	s.staticTriggers = triggers
 	s.capMu.Unlock()
 	return nil
 }
+
+// typeTriggers are on-type formatting's trigger characters: firstTriggerCharacter and
+// moreTriggerCharacter
+func typeTriggers(o map[string]json.RawMessage) []string {
+	var out []string
+	if first, err := jsonString(o["firstTriggerCharacter"]); err == nil && first != "" {
+		out = append(out, first)
+	}
+	var more []string
+	if json.Unmarshal(o["moreTriggerCharacter"], &more) == nil {
+		for _, c := range more {
+			if c != "" && len(out) < 64 {
+				out = append(out, c)
+			}
+		}
+	}
+	return out
+}
+
 func (s *server) supports(method string, d selectorDocument) bool {
 	s.capMu.RLock()
 	defer s.capMu.RUnlock()
 	if s.ended.Load() {
 		return false
 	}
-	resolve := method == "codeAction/resolve"
-	if resolve {
-		method = "textDocument/codeAction"
+	option := false
+	if dep, ok := dependent[method]; ok {
+		method, option = dep.base, dep.option
 	}
-	if method == "completionItem/resolve" {
-		resolve = true
-		method = "textDocument/completion"
-		if s.staticCapabilities[method] && s.staticCompletionResolve {
-			return true
-		}
-	} else if s.staticCapabilities[method] && (!resolve || s.staticResolve) {
+	if s.staticCapabilities[method] && (!option || s.staticOptions[method]) {
 		return true
 	}
 	for _, registration := range s.registrations {
-		if registration.method == method && (!resolve || registration.resolve) && registration.matches(d) {
+		if registration.method == method && (!option || registration.resolve) && registration.matches(d) {
 			return true
 		}
 	}
 	return false
+}
+
+// onTypeTriggers are the trigger characters of on-type formatting for the document: the static
+// provider's and those of the registrations that match it
+func (s *server) onTypeTriggers(d selectorDocument) []string {
+	s.capMu.RLock()
+	defer s.capMu.RUnlock()
+	var out []string
+	if s.staticCapabilities["textDocument/onTypeFormatting"] {
+		out = append(out, s.staticTriggers...)
+	}
+	for _, registration := range s.registrations {
+		if registration.method == "textDocument/onTypeFormatting" && registration.matches(d) {
+			out = append(out, registration.triggers...)
+		}
+	}
+	return out
 }
 
 func (s *server) registerCapabilities(params json.RawMessage) (any, int, string) {
@@ -260,7 +342,7 @@ func (s *server) registerCapabilities(params json.RawMessage) (any, int, string)
 			return nil, -32602, "invalid registration ID"
 		}
 		method, err := jsonString(item["method"])
-		if err != nil || (capabilityFields[method] == "" && !isSynchronizationMethod(method) && method != watchedFilesMethod) {
+		if _, known := capabilityFields[method]; err != nil || (!known && !isSynchronizationMethod(method) && method != watchedFilesMethod) {
 			return nil, -32602, "unsupported registration method"
 		}
 		if _, duplicate := batch[id]; duplicate {
@@ -296,11 +378,16 @@ func (s *server) registerCapabilities(params json.RawMessage) (any, int, string)
 					return nil, -32602, err.Error()
 				}
 			}
-			if raw, exists := options["resolveProvider"]; exists && (method == "textDocument/codeAction" || method == "textDocument/completion") {
-				if string(raw) != "true" && string(raw) != "false" {
-					return nil, -32602, "invalid resolveProvider"
+			if option := providerOption[method]; option != "" {
+				if raw, exists := options[option]; exists {
+					if string(raw) != "true" && string(raw) != "false" {
+						return nil, -32602, "invalid " + option
+					}
+					resolve = string(raw) == "true"
 				}
-				resolve = string(raw) == "true"
+			}
+			if method == "textDocument/onTypeFormatting" {
+				registration.triggers = typeTriggers(options)
 			}
 		}
 		if (method == "textDocument/didChange" || method == watchedFilesMethod) && (len(options) == 0 || string(options) == "null") {
@@ -359,6 +446,9 @@ func (s *server) registerCapabilities(params json.RawMessage) (any, int, string)
 	}
 	if code == 0 && hasSync {
 		s.refreshSynchronization()
+	}
+	if code == 0 {
+		s.l.scopeChanged()
 	}
 	return result, code, message
 }
@@ -425,6 +515,9 @@ func (s *server) unregisterCapabilities(params json.RawMessage) (any, int, strin
 	}
 	if code == 0 && hasSync {
 		s.refreshSynchronization()
+	}
+	if code == 0 {
+		s.l.scopeChanged()
 	}
 	return result, code, message
 }

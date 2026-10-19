@@ -1,0 +1,58 @@
+ext=lsp state=running
+complete = *.go
+complete.triggers = . : >
+signature = *.go
+signature.triggers = ( ,
+definition = *.go
+references = *.go
+symbols = *.go
+actions = *.go
+rename = *.go
+format = *.go
+save_actions = *.go
+hover = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css
+declaration = *.go
+implementation = *.go
+selection_ranges = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css
+call_hierarchy = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css
+type_hierarchy = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css
+workspace_symbols = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css
+range_format = *.go
+type_format = *.go
+type_format.triggers = newline }
+document_links = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css
+tabs=1 active=main.go line=6 col=11 sel=0 dirty=0 lang=Go focus=0 theme=rhun-dark
+choose=Go to reference
+field=
+> main.go:5  ERR := 1
+  main.go:6  _ = ERR
+tabs=1 active=main.go line=5 col=8 sel=3 dirty=0 lang=Go focus=0 theme=rhun-dark
+tabs=1 active=main.go line=4 col=10 sel=4 dirty=0 lang=Go focus=0 theme=rhun-dark
+toast=Nothing to rename here
+none
+package main
+
+// TODO first
+func main() {
+	Err := 1
+	_ = ERR
+}
+
+<eod>
+package main
+
+func f() {
+	x := 1
+    _ = x
+}
+
+<eod>
+package main
+
+func f() {
+	x := 1
+	_ = x
+    
+}
+
+<eod>

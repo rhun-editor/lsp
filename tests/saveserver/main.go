@@ -131,7 +131,8 @@ func main() {
 			uri = params["textDocument"].(map[string]any)["uri"].(string)
 			d := docs[uri]
 			only := "source.fixAll"
-			if kinds, ok := params["context"].(map[string]any)["only"].([]any); ok && len(kinds) > 0 {
+			kinds, asked := params["context"].(map[string]any)["only"].([]any)
+			if asked && len(kinds) > 0 {
 				only = kinds[0].(string)
 			}
 			var actions []any
@@ -195,7 +196,12 @@ func main() {
 					}
 				}
 			}
-			actions = append(actions, map[string]any{"title": "Disabled", "kind": "source.fixAll", "disabled": map[string]any{"reason": "no"}}, makeAction("Wrong kind", "refactor", changes(uri, edit(pos{}, "[BAD]"))))
+			actions = append(actions, map[string]any{"title": "Disabled", "kind": "source.fixAll", "disabled": map[string]any{"reason": "no"}})
+			if asked {
+				// a kind the save did not ask for (rhun lists refactors before source actions, so
+				// the interactive list leaves it out)
+				actions = append(actions, makeAction("Wrong kind", "refactor", changes(uri, edit(pos{}, "[BAD]"))))
+			}
 			reply(msg["id"], actions)
 		case "codeAction/resolve":
 			if mode == "resolve-initial-foreign-delayed" {

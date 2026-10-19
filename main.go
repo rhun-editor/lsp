@@ -106,7 +106,13 @@ type lsp struct {
 	statusOnce                     sync.Once
 	stopping                       bool
 	config                         map[string][]string
-	diags                          map[string][]json.RawMessage // the server's diagnostics by path, for code actions
+	diags                          map[string]*keptDiagnostics // the server's diagnostics by path (diagnostics.go)
+	scopeWake                      chan struct{}               // provider scope (scope.go)
+	found                          map[string]bool
+	foundGeneration                uint64
+	actionsMu                      sync.Mutex // code actions waiting to be chosen (codeactions.go)
+	actionSerial                   uint64
+	actionSets                     map[uint64][]actionData
 }
 
 func (l *lsp) Ready(ext *rhunext.Ext, project string) {
@@ -116,8 +122,9 @@ func (l *lsp) Ready(ext *rhunext.Ext, project string) {
 	l.docs = map[rhunext.Doc]*document{}
 	l.byPath = map[string]*document{}
 	l.servers = map[string]*server{}
-	l.diags = map[string][]json.RawMessage{}
+	l.diags = map[string]*keptDiagnostics{}
 	l.startStatusWorker()
+	l.startScopeWorker()
 	var err error
 	l.config, err = readConfig(filepath.Join(l.state, "lsp.ini"))
 	if err != nil {
@@ -185,6 +192,7 @@ func (l *lsp) Run(ext *rhunext.Ext, command string, doc rhunext.Doc) {
 		for _, d := range docs {
 			go l.open(d)
 		}
+		l.scopeChanged()
 		ext.Toast("Language servers restarted")
 	}
 }
@@ -205,6 +213,7 @@ func (l *lsp) serverFor(lang string) *server {
 	if argv == nil {
 		argv = servers[lang]
 	}
+	defer l.scopeChanged()
 	if len(argv) == 0 {
 		l.servers[lang] = nil
 		return nil
@@ -225,38 +234,40 @@ func (l *lsp) serverFor(lang string) *server {
 // ---- a language server
 
 type server struct {
-	l                       *lsp
-	lang                    string
-	argv                    []string
-	cmd                     *exec.Cmd
-	in                      io.WriteCloser
-	out                     io.ReadCloser
-	writeGate               chan struct{}
-	cancelOnce              sync.Once
-	cancels                 chan int
-	waitDone                chan struct{}
-	processExited           atomic.Bool
-	nextID                  int
-	pmu                     sync.Mutex
-	pending                 map[int]chan json.RawMessage
-	ready                   atomic.Bool
-	ended                   atomic.Bool
-	stateMu                 sync.Mutex
-	configMu                sync.Mutex
-	done                    chan struct{}
-	generation              uint64
-	readyCh                 chan struct{}
-	capMu                   sync.RWMutex
-	staticCapabilities      map[string]bool
-	staticResolve           bool
-	staticCompletionResolve bool
-	registrations           map[string]capabilityRegistration
-	syncOptions             synchronizationOptions
-	syncGeneration          uint64
-	watchGeneration         uint64
-	commandMu               sync.Mutex
-	commandCapture          *commandCapture
-	commandUsed             atomic.Bool
+	l                  *lsp
+	lang               string
+	argv               []string
+	cmd                *exec.Cmd
+	in                 io.WriteCloser
+	out                io.ReadCloser
+	writeGate          chan struct{}
+	cancelOnce         sync.Once
+	cancels            chan int
+	waitDone           chan struct{}
+	processExited      atomic.Bool
+	nextID             int
+	pmu                sync.Mutex
+	pending            map[int]chan json.RawMessage
+	ready              atomic.Bool
+	ended              atomic.Bool
+	stateMu            sync.Mutex
+	configMu           sync.Mutex
+	done               chan struct{}
+	generation         uint64
+	readyCh            chan struct{}
+	capMu              sync.RWMutex
+	staticCapabilities map[string]bool
+	staticOptions      map[string]bool // providerOption of each static provider
+	staticTriggers     []string        // on-type formatting's
+	registrations      map[string]capabilityRegistration
+	syncOptions        synchronizationOptions
+	syncGeneration     uint64
+	watchGeneration    uint64
+	commandMu          sync.Mutex
+	commandCapture     *commandCapture
+	commandUsed        atomic.Bool
+	tokenMu            sync.Mutex
+	feeds              map[string]*queryFeed // the extension's request tokens (stream.go)
 }
 
 type location struct {
@@ -306,40 +317,7 @@ func (s *server) start() {
 		"processId": os.Getpid(), "rootUri": root,
 		"workspaceFolders":      folders,
 		"initializationOptions": options,
-		"capabilities": map[string]any{
-			"textDocument": map[string]any{
-				"synchronization":    map[string]any{"didSave": true, "dynamicRegistration": true},
-				"publishDiagnostics": map[string]any{"versionSupport": true},
-				"hover":              map[string]any{"contentFormat": []string{"plaintext", "markdown"}},
-				"definition":         map[string]any{"linkSupport": true},
-				"references":         map[string]any{},
-				"documentSymbol":     map[string]any{"hierarchicalDocumentSymbolSupport": true},
-				"codeAction": map[string]any{"isPreferredSupport": true, "disabledSupport": true,
-					"dataSupport": true, "resolveSupport": map[string]any{"properties": []string{"edit", "command"}},
-					"codeActionLiteralSupport": map[string]any{"codeActionKind": map[string]any{"valueSet": []string{
-						"", "quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite", "source",
-						"source.organizeImports", "source.fixAll"}}}},
-				"rename":     map[string]any{"prepareSupport": false},
-				"formatting": map[string]any{},
-				"completion": s.l.completionCapabilities(),
-				"signatureHelp": map[string]any{"contextSupport": true, "signatureInformation": map[string]any{
-					"documentationFormat":  []string{"plaintext", "markdown"},
-					"parameterInformation": map[string]any{"labelOffsetSupport": true}, "activeParameterSupport": true}},
-			},
-			"window": map[string]any{"workDoneProgress": true},
-			"workspace": map[string]any{"configuration": true, "workspaceFolders": true, "applyEdit": true, "executeCommand": map[string]any{},
-				"workspaceEdit": map[string]any{"documentChanges": true, "resourceOperations": []string{}}},
-			"general": map[string]any{"positionEncodings": []string{"utf-16"}},
-		}}
-	if s.l.workspaceWatchAvailable() {
-		initializeParams["capabilities"].(map[string]any)["workspace"].(map[string]any)["didChangeWatchedFiles"] = map[string]any{"dynamicRegistration": true, "relativePatternSupport": true}
-	}
-	textCaps := initializeParams["capabilities"].(map[string]any)["textDocument"].(map[string]any)
-	for method := range capabilityFields {
-		name := strings.TrimPrefix(method, "textDocument/")
-		if options, ok := textCaps[name].(map[string]any); ok {
-			options["dynamicRegistration"] = true
-		}
+		"capabilities":          s.l.clientCapabilities(s.l.workspaceWatchAvailable()),
 	}
 	res, err := s.call("initialize", initializeParams)
 	if err != nil {
@@ -360,6 +338,7 @@ func (s *server) start() {
 		return
 	}
 	s.status(s.name(), false)
+	s.l.scopeChanged()
 }
 
 func (s *server) waitReady() { <-s.readyCh }
@@ -410,7 +389,9 @@ func (s *server) read(br *bufio.Reader) {
 				ch <- body
 			}
 		case msg.Method == "$/progress":
-			s.progress(msg.Params)
+			if !s.feedProgress(msg.Params) {
+				s.progress(msg.Params)
+			}
 		case msg.Method == "textDocument/publishDiagnostics":
 			s.publish(msg.Params)
 		case msg.Method == "workspace/applyEdit" && len(msg.ID) > 0:
@@ -443,7 +424,7 @@ func (s *server) publish(params json.RawMessage) {
 	}
 	json.Unmarshal(params, &raw)
 	s.l.mu.Lock()
-	s.l.diags[uriPath(p.URI)] = raw.Diagnostics
+	s.l.diags[uriPath(p.URI)] = keepDiagnostics(raw.Diagnostics)
 	d := s.l.byPath[uriPath(p.URI)]
 	var text []byte
 	var version int64
@@ -642,6 +623,93 @@ func (l *lsp) completionCapabilities() map[string]any {
 	return caps
 }
 
+// clientCapabilities are what the client offers the server: the services of the features rhun
+// agreed, each with dynamic registration. Positions stay UTF-16: the extension converts columns
+// in that encoding everywhere, so it offers no other.
+func (l *lsp) clientCapabilities(watch bool) map[string]any {
+	formats := []string{"plaintext", "markdown"}
+	if l.has(featureMarkdown) {
+		formats = []string{"markdown", "plaintext"}
+	}
+	diagnostics := map[string]any{"versionSupport": true, "dataSupport": true}
+	if l.has(rhunext.FeatureFileDiagnostics) {
+		diagnostics["relatedInformation"] = true
+		diagnostics["tagSupport"] = map[string]any{"valueSet": []int{1, 2}}
+		diagnostics["codeDescriptionSupport"] = true
+	}
+	rename := map[string]any{"prepareSupport": false}
+	if l.has(rhunext.FeaturePrepareRename) {
+		rename = map[string]any{"prepareSupport": true, "prepareSupportDefaultBehavior": 1}
+	}
+	text := map[string]any{
+		"synchronization":    map[string]any{"didSave": true},
+		"publishDiagnostics": diagnostics,
+		"hover":              map[string]any{"contentFormat": formats},
+		"definition":         map[string]any{"linkSupport": true},
+		"references":         map[string]any{},
+		"documentSymbol":     map[string]any{"hierarchicalDocumentSymbolSupport": true},
+		"codeAction": map[string]any{"isPreferredSupport": true, "disabledSupport": true,
+			"dataSupport": true, "resolveSupport": map[string]any{"properties": []string{"edit", "command"}},
+			"codeActionLiteralSupport": map[string]any{"codeActionKind": map[string]any{"valueSet": []string{
+				"", "quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.move", "refactor.rewrite",
+				"source", "source.organizeImports", "source.fixAll"}}}},
+		"rename":     rename,
+		"formatting": map[string]any{},
+		"completion": l.completionCapabilities(),
+		"signatureHelp": map[string]any{"contextSupport": true, "signatureInformation": map[string]any{
+			"documentationFormat":  formats,
+			"parameterInformation": map[string]any{"labelOffsetSupport": true}, "activeParameterSupport": true}},
+	}
+	if l.has(rhunext.FeatureNavigation) {
+		for _, name := range []string{"declaration", "typeDefinition", "implementation"} {
+			text[name] = map[string]any{"linkSupport": true}
+		}
+	}
+	if l.has(rhunext.FeatureSelectionRanges) {
+		text["selectionRange"] = map[string]any{}
+	}
+	if l.has(rhunext.FeatureHierarchy) {
+		text["callHierarchy"] = map[string]any{}
+		text["typeHierarchy"] = map[string]any{}
+	}
+	if l.has(rhunext.FeaturePartialFormat) {
+		text["rangeFormatting"] = map[string]any{}
+		text["onTypeFormatting"] = map[string]any{}
+	}
+	if l.has(rhunext.FeatureDocumentLinks) {
+		text["documentLink"] = map[string]any{"tooltipSupport": true}
+	}
+	if l.has(rhunext.FeatureFileDiagnostics) {
+		text["diagnostic"] = map[string]any{"relatedDocumentSupport": false}
+	}
+	workspace := map[string]any{"configuration": true, "workspaceFolders": true, "applyEdit": true, "executeCommand": map[string]any{},
+		"workspaceEdit": map[string]any{"documentChanges": true, "resourceOperations": []string{}}}
+	if l.has(rhunext.FeatureWorkspaceSymbols) {
+		kinds := make([]int, len(symbolKinds))
+		for i := range kinds {
+			kinds[i] = i + 1
+		}
+		workspace["symbol"] = map[string]any{"symbolKind": map[string]any{"valueSet": kinds},
+			"tagSupport": map[string]any{"valueSet": []int{1}}, "resolveSupport": map[string]any{"properties": []string{"location.range"}}}
+	}
+	if watch {
+		workspace["didChangeWatchedFiles"] = map[string]any{"dynamicRegistration": true, "relativePatternSupport": true}
+	}
+	caps := map[string]any{"textDocument": text, "workspace": workspace,
+		"window":  map[string]any{"workDoneProgress": true},
+		"general": map[string]any{"positionEncodings": []string{"utf-16"}}}
+	text["synchronization"].(map[string]any)["dynamicRegistration"] = true
+	for _, info := range capabilityFields {
+		section, name, _ := strings.Cut(info.client, ".")
+		if group, ok := caps[section].(map[string]any); ok {
+			if options, ok := group[name].(map[string]any); ok {
+				options["dynamicRegistration"] = true
+			}
+		}
+	}
+	return caps
+}
+
 func (l *lsp) configError(err error) {
 	l.ext.Logf("configuration: %v", err)
 	go l.ext.Toast("Language server configuration: " + err.Error())
@@ -657,9 +725,12 @@ func argOr(ev rhunext.Event, i int) string {
 func main() {
 	features := []string{rhunext.FeatureComplete, rhunext.FeatureSignature, rhunext.FeatureDefinition,
 		rhunext.FeatureReferences, rhunext.FeatureSymbols, rhunext.FeatureActions, rhunext.FeatureRename, rhunext.FeatureFormat, rhunext.FeatureSaveActions, rhunext.FeatureWorkspaceWatch,
-		// protocol 1.1: native snippet fields, completion items, overloads, streaming and narrowing
+		// protocol 1.1: native snippet fields, completion items, overloads, streaming and narrowing,
+		// declaration/type definition/implementation, prepare-rename, range and on-type formatting,
+		// code actions with kinds and resolve
 		rhunext.FeatureSnippets, rhunext.FeatureSnippetVariants, rhunext.FeatureSnippetTransforms,
-		rhunext.FeatureCompleteItems, rhunext.FeatureSignatureList, rhunext.FeatureQueryStream, rhunext.FeatureProviderScope}
+		rhunext.FeatureCompleteItems, rhunext.FeatureSignatureList, rhunext.FeatureQueryStream, rhunext.FeatureProviderScope,
+		rhunext.FeatureNavigation, rhunext.FeaturePrepareRename, rhunext.FeaturePartialFormat, rhunext.FeatureCodeActions}
 	l := &lsp{}
 	err := rhunext.RunWith(features, l)
 	l.shutdown()

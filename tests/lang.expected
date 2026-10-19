@@ -13,6 +13,7 @@ choose=Code action
 field=
 > Rename ERR to Err
   Add a comment
+  Not now
 package main
 
 // TODO first
@@ -25,6 +26,7 @@ func main() {
 choose=Code action
 field=
 > Add a comment
+  Not now
 // added by a command
 package main
 

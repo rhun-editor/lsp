@@ -77,33 +77,58 @@ func lineText(text []byte, n int) string {
 	return strings.TrimRight(string(text), "\r")
 }
 
-// ---- definition, references (12d)
+// ---- definition, references (12d); declaration, type definition, implementation (navigation)
+
+// locationKinds are rhun's location requests: the server's method and how long to wait
+var locationKinds = map[string]struct {
+	method string
+	limits queryLimits
+}{
+	"definition":      {"textDocument/definition", queryLimits{waitDefinition, 29 * time.Second}},
+	"declaration":     {"textDocument/declaration", queryLimits{waitDefinition, 29 * time.Second}},
+	"type-definition": {"textDocument/typeDefinition", queryLimits{waitDefinition, 29 * time.Second}},
+	"implementation":  {"textDocument/implementation", queryLimits{waitReferences, 59 * time.Second}},
+	"references":      {"textDocument/references", queryLimits{waitReferences, 119 * time.Second}},
+}
 
 func (l *lsp) Definition(ext *rhunext.Ext, req rhunext.PosRequest) []rhunext.Location {
-	d, text, s := l.current(req.Doc, req.Version)
-	if d == nil || !ready(s) {
-		return nil
-	}
-	res, err := askFor(s, d, waitDefinition, "textDocument/definition", docParams(d, text, req.At))
-	if err != nil {
-		return nil
-	}
-	return l.locations(res, d)
+	return l.LocationsStream(ext, "definition", req, nil)
 }
 
 func (l *lsp) References(ext *rhunext.Ext, req rhunext.PosRequest) []rhunext.Location {
+	return l.LocationsStream(ext, "references", req, nil)
+}
+
+// LocationsStream answers definition, references, declaration, type-definition and
+// implementation; with query-stream agreed the server's partial results come as parts, its
+// progress as progress, and a long answer is sent in parts rhun takes whole
+func (l *lsp) LocationsStream(ext *rhunext.Ext, kind string, req rhunext.PosRequest, out *rhunext.Stream) []rhunext.Location {
+	k, ok := locationKinds[kind]
+	if !ok {
+		return nil
+	}
 	d, text, s := l.current(req.Doc, req.Version)
 	if d == nil || !ready(s) {
 		return nil
 	}
 	p := docParams(d, text, req.At)
-	p["context"] = map[string]any{"includeDeclaration": true}
-	res, err := askFor(s, d, waitReferences, "textDocument/references", p)
-	if err != nil {
+	if kind == "references" {
+		p["context"] = map[string]any{"includeDeclaration": true}
+	}
+	convert := func(raw json.RawMessage) []rhunext.Location { return l.locations(raw, d) }
+	res, carried, err := streamQuery(l, d, out, k.limits, k.method, p, convert, sendLocations)
+	if err != nil && len(carried) == 0 {
 		return nil
 	}
-	return l.locations(res, d)
+	locs := append(carried, l.locations(res, d)...)
+	return streamRest(l, out, locs, locationSize, sendLocations)
 }
+
+func sendLocations(out *rhunext.Stream, locs []rhunext.Location) error {
+	return out.PartLocations(locs)
+}
+
+func locationSize(loc rhunext.Location) int { return len(loc.Target.String()) + len(loc.Text) + 48 }
 
 // locations reads Location, Location[] or LocationLink[]
 func (l *lsp) locations(res json.RawMessage, query *documentQuery) []rhunext.Location {
@@ -269,20 +294,7 @@ func (l *lsp) Actions(ext *rhunext.Ext, req rhunext.ActionsRequest) []rhunext.Co
 		return nil
 	}
 	start, end := lspPos(text, byteOffset(text, req.Range.Start)), lspPos(text, byteOffset(text, req.Range.End))
-	l.mu.Lock()
-	var diags []json.RawMessage
-	for _, raw := range l.diags[d.path] {
-		var x struct {
-			Range lspRange `json:"range"`
-		}
-		if json.Unmarshal(raw, &x) == nil && !before(x.Range.End, start) && !before(end, x.Range.Start) {
-			diags = append(diags, raw)
-		}
-	}
-	l.mu.Unlock()
-	if diags == nil {
-		diags = []json.RawMessage{}
-	}
+	diags := l.rangeDiagnostics(d.path, start, end)
 	queries := l.commandQuerySnapshots(s, d)
 	res, err := askFor(s, d, waitActions, "textDocument/codeAction", map[string]any{
 		"textDocument": map[string]any{"uri": fileURI(d.path)},
@@ -511,6 +523,95 @@ func (l *lsp) Format(ext *rhunext.Ext, req rhunext.FormatRequest) rhunext.Worksp
 		ext.Toast("Format: " + err.Error())
 		return out
 	}
+	return docEdit(res, req.Doc, req.Version, text)
+}
+
+// ---- prepare-rename, partial-format (protocol 1.1)
+
+// a little under rhun's limits of prepare-rename, range-format and type-format
+const (
+	waitPrepareRename = 1800 * time.Millisecond
+	waitTypeFormat    = 450 * time.Millisecond
+)
+
+// PrepareRename asks textDocument/prepareRename what F2 renames: a range (its text is the
+// placeholder), a range and a placeholder, or the default behaviour (the word at the cursor, an
+// empty answer); null or the server's error refuses. A server without prepareRename, or no answer
+// in time, leaves the word at the cursor.
+func (l *lsp) PrepareRename(ext *rhunext.Ext, req rhunext.PosRequest) (*rhunext.PreparedRename, error) {
+	d, text, s := l.current(req.Doc, req.Version)
+	if d == nil || !ready(s) {
+		return nil, nil
+	}
+	if !s.supports("textDocument/prepareRename", selectorFor(d.origin)) {
+		return nil, nil
+	}
+	res, err := d.request(waitPrepareRename, "textDocument/prepareRename", docParams(d, text, req.At))
+	var refused *serverError
+	switch {
+	case errors.As(err, &refused) && refused.Code != codeRequestCancelled && refused.Code != codeContentModified:
+		if strings.TrimSpace(refused.Message) == "" {
+			return nil, rhunext.ErrNothingToRename
+		}
+		return nil, errors.New(oneLineText(refused.Message))
+	case err != nil:
+		return nil, nil // no answer: the word at the cursor
+	}
+	return preparedRename(res, text)
+}
+
+// preparedRename reads prepareRename's answer: Range | {range, placeholder} | {defaultBehavior}
+// | null
+func preparedRename(res json.RawMessage, text []byte) (*rhunext.PreparedRename, error) {
+	if len(res) == 0 || string(res) == "null" {
+		return nil, rhunext.ErrNothingToRename
+	}
+	var x struct {
+		Range           *lspRange    `json:"range"`
+		Placeholder     *string      `json:"placeholder"`
+		DefaultBehavior bool         `json:"defaultBehavior"`
+		Start           *lspPosition `json:"start"`
+		End             *lspPosition `json:"end"`
+	}
+	if json.Unmarshal(res, &x) != nil {
+		return nil, nil
+	}
+	switch {
+	case x.Range != nil:
+		r := rhunRange(text, *x.Range)
+		p := &rhunext.PreparedRename{Range: r}
+		if x.Placeholder != nil {
+			p.Placeholder = *x.Placeholder
+		} else {
+			p.Placeholder = string(text[byteOffset(text, r.Start):byteOffset(text, r.End)])
+		}
+		return p, nil
+	case x.Start != nil && x.End != nil:
+		r := rhunRange(text, lspRange{Start: *x.Start, End: *x.End})
+		return &rhunext.PreparedRename{Range: r, Placeholder: string(text[byteOffset(text, r.Start):byteOffset(text, r.End)])}, nil
+	case x.DefaultBehavior:
+		return nil, nil
+	}
+	return nil, rhunext.ErrNothingToRename
+}
+
+// oneLineText is the first line of a server's message
+func oneLineText(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = strings.TrimSpace(s[:i])
+	}
+	return s
+}
+
+// formattingOptions are LSP's FormattingOptions from rhun's settings in force
+func formattingOptions(tab int, spaces, trim, final bool) map[string]any {
+	return map[string]any{"tabSize": tab, "insertSpaces": spaces, "trimTrailingWhitespace": trim, "insertFinalNewline": final}
+}
+
+// docEdit is a server's TextEdit[] for the document as rhun's edit at the query's version
+func docEdit(res json.RawMessage, doc rhunext.Doc, version int64, text []byte) rhunext.WorkspaceEdit {
+	var out rhunext.WorkspaceEdit
 	var edits []lspEdit
 	if json.Unmarshal(res, &edits) != nil || len(edits) == 0 {
 		return out
@@ -519,8 +620,56 @@ func (l *lsp) Format(ext *rhunext.Ext, req rhunext.FormatRequest) rhunext.Worksp
 	for _, e := range edits {
 		re = append(re, rhunext.TextEdit{Range: rhunRange(text, e.Range), Text: e.NewText})
 	}
-	out.AddDoc(req.Doc, req.Version, re...)
+	out.AddDoc(doc, version, re...)
 	return out
+}
+
+// RangeFormat asks textDocument/rangeFormatting for the selection (feature partial-format)
+func (l *lsp) RangeFormat(ext *rhunext.Ext, req rhunext.RangeFormatRequest) rhunext.WorkspaceEdit {
+	d, text, s := l.current(req.Doc, req.Version)
+	if d == nil || !ready(s) {
+		return rhunext.WorkspaceEdit{}
+	}
+	res, err := d.request(waitFormat, "textDocument/rangeFormatting", map[string]any{
+		"textDocument": map[string]any{"uri": fileURI(d.path)},
+		"range": map[string]any{"start": lspPos(text, byteOffset(text, req.Range.Start)),
+			"end": lspPos(text, byteOffset(text, req.Range.End))},
+		"options": formattingOptions(req.TabWidth, req.Spaces, req.Trim, req.Final)})
+	if err != nil {
+		ext.Toast("Format Selection: " + err.Error())
+		return rhunext.WorkspaceEdit{}
+	}
+	return docEdit(res, req.Doc, req.Version, text)
+}
+
+// TypeFormat asks textDocument/onTypeFormatting after a trigger character (feature
+// partial-format); a server still starting is not waited for
+func (l *lsp) TypeFormat(ext *rhunext.Ext, req rhunext.TypeFormatRequest) rhunext.WorkspaceEdit {
+	l.mu.Lock()
+	var s *server
+	if d := l.docs[req.Doc]; d != nil {
+		s = d.server
+	}
+	l.mu.Unlock()
+	if s == nil || !s.ready.Load() {
+		return rhunext.WorkspaceEdit{}
+	}
+	d, text, _ := l.current(req.Doc, req.Version)
+	if d == nil {
+		return rhunext.WorkspaceEdit{}
+	}
+	ch := req.Char
+	if ch == "newline" {
+		ch = "\n"
+	}
+	p := docParams(d, text, req.At)
+	p["ch"] = ch
+	p["options"] = formattingOptions(req.TabWidth, req.Spaces, req.Trim, req.Final)
+	res, err := d.request(waitTypeFormat, "textDocument/onTypeFormatting", p)
+	if err != nil {
+		return rhunext.WorkspaceEdit{}
+	}
+	return docEdit(res, req.Doc, req.Version, text)
 }
 
 func actionTargets(edit rhunext.WorkspaceEdit, queries []*documentQuery) []actionTarget {

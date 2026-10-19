@@ -49,6 +49,21 @@ printf 'package main\n\n// TODO first\nfunc main() {\n\tERR := 1\n\t_ = ERR\n}\n
 run tests/lang.txt | sed 's/pid=[1-9][0-9]*/pid=PID/' > "$work/out.txt"
 check lang
 
+# protocol 1.1: every server but the fake turned off, so the scope does not depend on what this
+# machine has installed; formatting as you type on
+printf 'package main\n\n// TODO first\nfunc main() {\n\tERR := 1\n\t_ = ERR\n}\n' > "$work/proj/main.go"
+printf 'package main\n\nfunc f() {\n    x := 1\n    _ = x\n}\n' > "$work/proj/fmt.go"
+printf '[servers]\n' > "$state/lsp.ini"
+for lang in Rust TypeScript JavaScript Python C C++ Zig Lua Ruby Dart Kotlin Swift OCaml Haskell Elixir Nix Terraform YAML JSON HTML CSS; do
+    printf '%s = off\n' "$lang" >> "$state/lsp.ini"
+done
+cp "$work/config/rhun/config" "$work/config.saved"
+printf '\n[editor]\nformat_on_type = yes\n' >> "$work/config/rhun/config"
+run tests/lang11.txt | sed 's/pid=[1-9][0-9]*/pid=PID/' > "$work/out.txt"
+check lang11
+cp "$work/config.saved" "$work/config/rhun/config"
+rm "$state/lsp.ini"
+
 # Saving must negotiate through the real SDK, format first and then write the resulting bytes.
 printf '\n[files]\nformat_on_save = true\n' >> "$work/config/rhun/config"
 run tests/save.txt > "$work/out.txt"
