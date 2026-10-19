@@ -225,37 +225,38 @@ func (l *lsp) serverFor(lang string) *server {
 // ---- a language server
 
 type server struct {
-	l                  *lsp
-	lang               string
-	argv               []string
-	cmd                *exec.Cmd
-	in                 io.WriteCloser
-	out                io.ReadCloser
-	writeGate          chan struct{}
-	cancelOnce         sync.Once
-	cancels            chan int
-	waitDone           chan struct{}
-	processExited      atomic.Bool
-	nextID             int
-	pmu                sync.Mutex
-	pending            map[int]chan json.RawMessage
-	ready              atomic.Bool
-	ended              atomic.Bool
-	stateMu            sync.Mutex
-	configMu           sync.Mutex
-	done               chan struct{}
-	generation         uint64
-	readyCh            chan struct{}
-	capMu              sync.RWMutex
-	staticCapabilities map[string]bool
-	staticResolve      bool
-	registrations      map[string]capabilityRegistration
-	syncOptions        synchronizationOptions
-	syncGeneration     uint64
-	watchGeneration    uint64
-	commandMu          sync.Mutex
-	commandCapture     *commandCapture
-	commandUsed        atomic.Bool
+	l                       *lsp
+	lang                    string
+	argv                    []string
+	cmd                     *exec.Cmd
+	in                      io.WriteCloser
+	out                     io.ReadCloser
+	writeGate               chan struct{}
+	cancelOnce              sync.Once
+	cancels                 chan int
+	waitDone                chan struct{}
+	processExited           atomic.Bool
+	nextID                  int
+	pmu                     sync.Mutex
+	pending                 map[int]chan json.RawMessage
+	ready                   atomic.Bool
+	ended                   atomic.Bool
+	stateMu                 sync.Mutex
+	configMu                sync.Mutex
+	done                    chan struct{}
+	generation              uint64
+	readyCh                 chan struct{}
+	capMu                   sync.RWMutex
+	staticCapabilities      map[string]bool
+	staticResolve           bool
+	staticCompletionResolve bool
+	registrations           map[string]capabilityRegistration
+	syncOptions             synchronizationOptions
+	syncGeneration          uint64
+	watchGeneration         uint64
+	commandMu               sync.Mutex
+	commandCapture          *commandCapture
+	commandUsed             atomic.Bool
 }
 
 type location struct {
@@ -320,8 +321,7 @@ func (s *server) start() {
 						"source.organizeImports", "source.fixAll"}}}},
 				"rename":     map[string]any{"prepareSupport": false},
 				"formatting": map[string]any{},
-				"completion": map[string]any{"contextSupport": true, "completionItem": map[string]any{
-					"snippetSupport": false, "documentationFormat": []string{"plaintext", "markdown"}}},
+				"completion": s.l.completionCapabilities(),
 				"signatureHelp": map[string]any{"contextSupport": true, "signatureInformation": map[string]any{
 					"documentationFormat":  []string{"plaintext", "markdown"},
 					"parameterInformation": map[string]any{"labelOffsetSupport": true}, "activeParameterSupport": true}},
@@ -619,6 +619,29 @@ func unmark(s string) string {
 	return text
 }
 
+// has is whether rhun agreed a feature (false before the session, as in the tests)
+func (l *lsp) has(feature string) bool { return l.ext != nil && l.ext.Has(feature) }
+
+// completionCapabilities is the client's completion capabilities: snippets only when rhun
+// agreed native snippet fields, and the item properties complete-items carries
+func (l *lsp) completionCapabilities() map[string]any {
+	item := map[string]any{"snippetSupport": l.has(rhunext.FeatureSnippets),
+		"documentationFormat": []string{"plaintext", "markdown"}}
+	caps := map[string]any{"contextSupport": true, "completionItem": item}
+	if l.has(rhunext.FeatureCompleteItems) {
+		item["insertReplaceSupport"] = true
+		item["commitCharactersSupport"] = true
+		item["labelDetailsSupport"] = true
+		item["deprecatedSupport"] = true
+		item["preselectSupport"] = true
+		item["tagSupport"] = map[string]any{"valueSet": []int{1}}
+		item["insertTextModeSupport"] = map[string]any{"valueSet": []int{1, 2}}
+		item["resolveSupport"] = map[string]any{"properties": []string{"documentation", "detail", "additionalTextEdits"}}
+		caps["completionList"] = map[string]any{"itemDefaults": []string{"commitCharacters", "editRange", "insertTextFormat", "insertTextMode", "data"}}
+	}
+	return caps
+}
+
 func (l *lsp) configError(err error) {
 	l.ext.Logf("configuration: %v", err)
 	go l.ext.Toast("Language server configuration: " + err.Error())
@@ -633,7 +656,10 @@ func argOr(ev rhunext.Event, i int) string {
 
 func main() {
 	features := []string{rhunext.FeatureComplete, rhunext.FeatureSignature, rhunext.FeatureDefinition,
-		rhunext.FeatureReferences, rhunext.FeatureSymbols, rhunext.FeatureActions, rhunext.FeatureRename, rhunext.FeatureFormat, rhunext.FeatureSaveActions, rhunext.FeatureWorkspaceWatch}
+		rhunext.FeatureReferences, rhunext.FeatureSymbols, rhunext.FeatureActions, rhunext.FeatureRename, rhunext.FeatureFormat, rhunext.FeatureSaveActions, rhunext.FeatureWorkspaceWatch,
+		// protocol 1.1: native snippet fields, completion items, overloads, streaming and narrowing
+		rhunext.FeatureSnippets, rhunext.FeatureSnippetVariants, rhunext.FeatureSnippetTransforms,
+		rhunext.FeatureCompleteItems, rhunext.FeatureSignatureList, rhunext.FeatureQueryStream, rhunext.FeatureProviderScope}
 	l := &lsp{}
 	err := rhunext.RunWith(features, l)
 	l.shutdown()

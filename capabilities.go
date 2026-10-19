@@ -204,6 +204,10 @@ func (s *server) loadCapabilities(raw json.RawMessage) error {
 	if options, err := jsonObject(caps["codeActionProvider"]); err == nil {
 		s.staticResolve = string(options["resolveProvider"]) == "true"
 	}
+	s.staticCompletionResolve = false
+	if options, err := jsonObject(caps["completionProvider"]); err == nil {
+		s.staticCompletionResolve = string(options["resolveProvider"]) == "true"
+	}
 	s.capMu.Unlock()
 	return nil
 }
@@ -217,7 +221,13 @@ func (s *server) supports(method string, d selectorDocument) bool {
 	if resolve {
 		method = "textDocument/codeAction"
 	}
-	if s.staticCapabilities[method] && (!resolve || s.staticResolve) {
+	if method == "completionItem/resolve" {
+		resolve = true
+		method = "textDocument/completion"
+		if s.staticCapabilities[method] && s.staticCompletionResolve {
+			return true
+		}
+	} else if s.staticCapabilities[method] && (!resolve || s.staticResolve) {
 		return true
 	}
 	for _, registration := range s.registrations {
@@ -286,9 +296,9 @@ func (s *server) registerCapabilities(params json.RawMessage) (any, int, string)
 					return nil, -32602, err.Error()
 				}
 			}
-			if raw, exists := options["resolveProvider"]; exists && method == "textDocument/codeAction" {
+			if raw, exists := options["resolveProvider"]; exists && (method == "textDocument/codeAction" || method == "textDocument/completion") {
 				if string(raw) != "true" && string(raw) != "false" {
-					return nil, -32602, "invalid code action resolveProvider"
+					return nil, -32602, "invalid resolveProvider"
 				}
 				resolve = string(raw) == "true"
 			}
