@@ -59,6 +59,13 @@ if ! cmp -s "$work/proj/fmt.go" "$work/saved.expected"; then
     echo "FAIL saved formatting"; exit 1
 fi
 
+# linked editing: HTML's server is the fake one too
+printf '<div>\n  <p>hi</p>\n</div>\n' > "$work/proj/a.html"
+printf '[servers]\nHTML = gopls\n' > "$state/lsp.ini"
+run tests/linked.txt > "$work/out.txt"
+check linked
+rm "$state/lsp.ini"
+
 python3 tests/callbacks.py "$RHUN"
 
 python3 tests/source-actions.py "$RHUN"

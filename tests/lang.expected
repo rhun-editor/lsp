@@ -39,7 +39,7 @@ tabs=1 active=main.go line=5 col=10 sel=0 dirty=1 lang=Go focus=0 theme=rhun-dar
 prompt=New name
 field=main
 toast=bad is not a good name
-choose=Language Server: 'Rename to app' changes 1 file that are not open and 1 open file
+choose=Language Server: 'Rename to app' changes 1 file that is not open and 1 open file
 field=
 > Apply
   Apply, and let Language Server change project files from now on
