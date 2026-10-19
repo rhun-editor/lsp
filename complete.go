@@ -47,48 +47,27 @@ type lspItem struct {
 	AdditionalEdits  []lspTextEdit   `json:"additionalTextEdits"`
 }
 
-// snapshot is a document's text and server at the time of a request
-func (l *lsp) snapshot(doc rhunext.Doc) (*document, []byte, *server) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	d := l.docs[doc]
-	if d == nil || d.server == nil || d.text == nil {
-		return nil, nil, nil
-	}
-	return d, d.text, d.server
-}
-
 // ready waits a while for a server still starting
 func ready(s *server) bool {
+	if s.ready.Load() {
+		return true
+	}
 	select {
 	case <-s.readyCh:
-		return s.ready
+		return s.ready.Load()
 	case <-time.After(askTimeout):
 		return false
 	}
 }
 
 // ask is s.call with a deadline
-func ask(s *server, method string, params any) (json.RawMessage, bool) {
-	type answer struct {
-		res json.RawMessage
-		err error
-	}
-	ch := make(chan answer, 1)
-	go func() {
-		res, err := s.call(method, params)
-		ch <- answer{res, err}
-	}()
-	select {
-	case a := <-ch:
-		return a.res, a.err == nil && a.res != nil && string(a.res) != "null"
-	case <-time.After(askTimeout):
-		return nil, false
-	}
+func ask(s *server, d *documentQuery, method string, params any) (json.RawMessage, bool) {
+	res, err := d.request(askTimeout, method, params)
+	return res, err == nil && res != nil && string(res) != "null"
 }
 
 func (l *lsp) Complete(ext *rhunext.Ext, req rhunext.Request) rhunext.CompletionList {
-	d, text, s := l.snapshot(req.Doc)
+	d, text, s := l.current(req.Doc, req.Version)
 	if d == nil || !ready(s) {
 		return rhunext.CompletionList{}
 	}
@@ -99,7 +78,7 @@ func (l *lsp) Complete(ext *rhunext.Ext, req rhunext.Request) rhunext.Completion
 	case "incomplete":
 		ctx["triggerKind"] = 3
 	}
-	res, ok := ask(s, "textDocument/completion", map[string]any{
+	res, ok := ask(s, d, "textDocument/completion", map[string]any{
 		"textDocument": map[string]any{"uri": fileURI(d.path)},
 		"position":     lspPos(text, byteOffset(text, req.At)), "context": ctx})
 	if !ok {
@@ -167,7 +146,7 @@ func sortKey(it lspItem) string {
 }
 
 func (l *lsp) Signature(ext *rhunext.Ext, req rhunext.Request) *rhunext.SignatureHelp {
-	d, text, s := l.snapshot(req.Doc)
+	d, text, s := l.current(req.Doc, req.Version)
 	if d == nil || !ready(s) {
 		return nil
 	}
@@ -178,7 +157,7 @@ func (l *lsp) Signature(ext *rhunext.Ext, req rhunext.Request) *rhunext.Signatur
 	} else if req.Kind == "update" {
 		ctx["triggerKind"] = 3
 	}
-	res, ok := ask(s, "textDocument/signatureHelp", map[string]any{
+	res, ok := ask(s, d, "textDocument/signatureHelp", map[string]any{
 		"textDocument": map[string]any{"uri": fileURI(d.path)},
 		"position":     lspPos(text, byteOffset(text, req.At)), "context": ctx})
 	if !ok {

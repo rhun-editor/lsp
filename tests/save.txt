@@ -1,0 +1,5 @@
+open proj/fmt.go
+wait 1000
+cmd save
+wait 1000
+print-doc

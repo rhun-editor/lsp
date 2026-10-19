@@ -32,38 +32,11 @@ const (
 )
 
 // askFor is s.call with a deadline; the server's error, if it gave one
-func askFor(s *server, wait time.Duration, method string, params any) (json.RawMessage, error) {
-	type answer struct {
-		res json.RawMessage
-		err error
-	}
-	ch := make(chan answer, 1)
-	go func() {
-		res, err := s.call(method, params)
-		ch <- answer{res, err}
-	}()
-	select {
-	case a := <-ch:
-		return a.res, a.err
-	case <-time.After(wait):
-		return nil, errors.New("the language server did not answer in time")
-	}
+func askFor(s *server, d *documentQuery, wait time.Duration, method string, params any) (json.RawMessage, error) {
+	return d.request(wait, method, params)
 }
 
-// current is the document a request names, if the extension has it at the request's version
-// (every event up to that version was delivered before the request, so a mismatch means the
-// document is not one the server knows yet)
-func (l *lsp) current(doc rhunext.Doc, version int64) (*document, []byte, *server) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	d := l.docs[doc]
-	if d == nil || d.server == nil || d.text == nil || d.version != version {
-		return nil, nil, nil
-	}
-	return d, d.text, d.server
-}
-
-func docParams(d *document, text []byte, at rhunext.Pos) map[string]any {
+func docParams(d *documentQuery, text []byte, at rhunext.Pos) map[string]any {
 	return map[string]any{"textDocument": map[string]any{"uri": fileURI(d.path)}, "position": lspPos(text, byteOffset(text, at))}
 }
 
@@ -111,11 +84,11 @@ func (l *lsp) Definition(ext *rhunext.Ext, req rhunext.PosRequest) []rhunext.Loc
 	if d == nil || !ready(s) {
 		return nil
 	}
-	res, err := askFor(s, waitDefinition, "textDocument/definition", docParams(d, text, req.At))
+	res, err := askFor(s, d, waitDefinition, "textDocument/definition", docParams(d, text, req.At))
 	if err != nil {
 		return nil
 	}
-	return l.locations(res)
+	return l.locations(res, d)
 }
 
 func (l *lsp) References(ext *rhunext.Ext, req rhunext.PosRequest) []rhunext.Location {
@@ -125,15 +98,15 @@ func (l *lsp) References(ext *rhunext.Ext, req rhunext.PosRequest) []rhunext.Loc
 	}
 	p := docParams(d, text, req.At)
 	p["context"] = map[string]any{"includeDeclaration": true}
-	res, err := askFor(s, waitReferences, "textDocument/references", p)
+	res, err := askFor(s, d, waitReferences, "textDocument/references", p)
 	if err != nil {
 		return nil
 	}
-	return l.locations(res)
+	return l.locations(res, d)
 }
 
 // locations reads Location, Location[] or LocationLink[]
-func (l *lsp) locations(res json.RawMessage) []rhunext.Location {
+func (l *lsp) locations(res json.RawMessage, query *documentQuery) []rhunext.Location {
 	if len(res) == 0 || string(res) == "null" {
 		return nil
 	}
@@ -161,7 +134,7 @@ func (l *lsp) locations(res json.RawMessage) []rhunext.Location {
 		}
 		text, ok := texts[path]
 		if !ok {
-			text, _, _ = l.textOf(path)
+			text, _, _ = l.textForQuery(path, query)
 			texts[path] = text
 		}
 		r := rhunRange(text, rg)
@@ -205,7 +178,7 @@ func (l *lsp) Symbols(ext *rhunext.Ext, req rhunext.PosRequest) []rhunext.Symbol
 	if d == nil || !ready(s) {
 		return nil
 	}
-	res, err := askFor(s, waitSymbols, "textDocument/documentSymbol",
+	res, err := askFor(s, d, waitSymbols, "textDocument/documentSymbol",
 		map[string]any{"textDocument": map[string]any{"uri": fileURI(d.path)}})
 	if err != nil || len(res) == 0 || string(res) == "null" {
 		return nil
@@ -265,15 +238,29 @@ type lspAction struct {
 	Disabled    *struct {
 		Reason string `json:"reason"`
 	} `json:"disabled"`
+	Data    json.RawMessage `json:"data"`
 	Edit    json.RawMessage `json:"edit"`
 	Command json.RawMessage `json:"command"` // a Command in a CodeAction, a string in a bare Command
 	Args    json.RawMessage `json:"arguments"`
 }
 
 // actionData is what comes back with the action event: the command to run on which server
+type actionTarget struct {
+	Doc        rhunext.Doc `json:"doc"`
+	Path       string      `json:"path"`
+	Version    int64       `json:"version"`
+	LSPVersion int         `json:"lspVersion"`
+}
+
 type actionData struct {
-	Lang    string     `json:"lang"`
-	Command lspCommand `json:"command"`
+	Generation uint64         `json:"generation,omitempty"`
+	Lang       string         `json:"lang"`
+	Command    lspCommand     `json:"command"`
+	Resolve    *lspAction     `json:"resolve,omitempty"`
+	Prepared   *lspAction     `json:"prepared,omitempty"`
+	Targets    []actionTarget `json:"targets,omitempty"`
+	Doc        rhunext.Doc    `json:"doc,omitempty"`
+	Version    int64          `json:"version"`
 }
 
 func (l *lsp) Actions(ext *rhunext.Ext, req rhunext.ActionsRequest) []rhunext.CodeAction {
@@ -296,7 +283,8 @@ func (l *lsp) Actions(ext *rhunext.Ext, req rhunext.ActionsRequest) []rhunext.Co
 	if diags == nil {
 		diags = []json.RawMessage{}
 	}
-	res, err := askFor(s, waitActions, "textDocument/codeAction", map[string]any{
+	queries := l.commandQuerySnapshots(s, d)
+	res, err := askFor(s, d, waitActions, "textDocument/codeAction", map[string]any{
 		"textDocument": map[string]any{"uri": fileURI(d.path)},
 		"range":        map[string]any{"start": start, "end": end},
 		"context":      map[string]any{"diagnostics": diags, "triggerKind": 1}})
@@ -313,6 +301,21 @@ func (l *lsp) Actions(ext *rhunext.Ext, req rhunext.ActionsRequest) []rhunext.Co
 			continue
 		}
 		act := rhunext.CodeAction{Kind: actionKind(a), Title: a.Title}
+		if !bareActionCommand(a) && canResolveAction(d) {
+			action := a
+			data := actionData{Lang: d.lang, Generation: s.generation, Resolve: &action, Doc: d.id, Version: d.version}
+			if actionHasEdit(a) {
+				edit, err := l.commandWorkspaceEdit(a.Edit, s, queries...)
+				if err != nil {
+					ext.Logf("action %q: %v", a.Title, err)
+					continue
+				}
+				data.Targets = actionTargets(edit, queries)
+			}
+			act.Data, _ = json.Marshal(data)
+			out = append(out, act)
+			continue
+		}
 		var cmd *lspCommand
 		if len(a.Command) > 0 && a.Command[0] == '"' {
 			// a bare Command: {title, command, arguments}
@@ -330,7 +333,7 @@ func (l *lsp) Actions(ext *rhunext.Ext, req rhunext.ActionsRequest) []rhunext.Co
 			}
 		}
 		if len(a.Edit) > 0 && string(a.Edit) != "null" {
-			edit, err := l.workspaceEdit(a.Edit)
+			edit, err := l.commandWorkspaceEdit(a.Edit, s, queries...)
 			if err != nil {
 				ext.Logf("action %q: %v", a.Title, err)
 				continue
@@ -338,8 +341,17 @@ func (l *lsp) Actions(ext *rhunext.Ext, req rhunext.ActionsRequest) []rhunext.Co
 			act.Edit = &edit
 		}
 		if cmd != nil {
-			data, _ := json.Marshal(actionData{Lang: d.lang, Command: *cmd})
-			act.Data = data
+			data := actionData{Lang: d.lang, Generation: s.generation, Command: *cmd}
+			if act.Edit != nil {
+				action := a
+				data.Prepared = &action
+				data.Doc = d.id
+				data.Version = d.version
+				data.Targets = actionTargets(*act.Edit, queries)
+				// Apply and synchronize the edit before executing its command.
+				act.Edit = nil
+			}
+			act.Data, _ = json.Marshal(data)
 		}
 		if act.Edit == nil && act.Data == nil {
 			continue
@@ -381,45 +393,10 @@ func actionKind(a lspAction) rhunext.ActionKind {
 // Action runs a chosen action's server command; its edits come back as workspace/applyEdit
 func (l *lsp) Action(ext *rhunext.Ext, data []byte) {
 	var a actionData
-	if json.Unmarshal(data, &a) != nil || a.Command.Command == "" {
+	if json.Unmarshal(data, &a) != nil || (a.Command.Command == "" && a.Resolve == nil && a.Prepared == nil) {
 		return
 	}
-	l.mu.Lock()
-	s := l.servers[a.Lang]
-	l.mu.Unlock()
-	if s == nil || !s.ready {
-		ext.Toast("The language server is not running")
-		return
-	}
-	go func() {
-		args := a.Command.Arguments
-		if args == nil {
-			args = []json.RawMessage{}
-		}
-		if _, err := s.call("workspace/executeCommand", map[string]any{"command": a.Command.Command, "arguments": args}); err != nil {
-			l.ext.Toast(a.Command.Title + ": " + err.Error())
-		}
-	}()
-}
-
-// applyEdit answers the server's workspace/applyEdit: the edit goes to rhun, which checks it
-// whole and changes nothing when anything is off
-func (s *server) applyEdit(id json.RawMessage, params json.RawMessage) {
-	var p struct {
-		Edit json.RawMessage `json:"edit"`
-	}
-	json.Unmarshal(params, &p)
-	result := map[string]any{"applied": false}
-	edit, err := s.l.workspaceEdit(p.Edit)
-	if err == nil {
-		err = s.l.ext.Apply(edit)
-	}
-	if err != nil {
-		result["failureReason"] = err.Error()
-	} else {
-		result["applied"] = true
-	}
-	s.write(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
+	go l.runExplicitCommand(a)
 }
 
 // ---- workspace edits (12g)
@@ -432,7 +409,7 @@ type lspEdit struct {
 // workspaceEdit turns LSP's WorkspaceEdit (changes, or documentChanges of TextDocumentEdits)
 // into rhun's: each file's edits made against the text rhun has (the open document at its
 // version, else the file on disk). Creating, renaming or deleting files is not supported.
-func (l *lsp) workspaceEdit(raw json.RawMessage) (rhunext.WorkspaceEdit, error) {
+func (l *lsp) workspaceEdit(raw json.RawMessage, queries ...*documentQuery) (rhunext.WorkspaceEdit, error) {
 	var w struct {
 		Changes         map[string][]lspEdit `json:"changes"`
 		DocumentChanges []json.RawMessage    `json:"documentChanges"`
@@ -480,7 +457,11 @@ func (l *lsp) workspaceEdit(raw json.RawMessage) (rhunext.WorkspaceEdit, error) 
 		if !filepath.IsAbs(path) {
 			return out, errors.New("an edit for " + g.uri)
 		}
-		text, version, err := l.textOf(path)
+		var query *documentQuery
+		if len(queries) > 0 {
+			query = queries[0]
+		}
+		text, version, err := l.textForQuery(path, query)
 		if err != nil {
 			return out, errors.New("cannot read " + filepath.Base(path))
 		}
@@ -507,14 +488,14 @@ func (l *lsp) Rename(ext *rhunext.Ext, req rhunext.RenameRequest) (rhunext.Works
 	}
 	p := docParams(d, text, req.At)
 	p["newName"] = req.Name
-	res, err := askFor(s, waitRename, "textDocument/rename", p)
+	res, err := askFor(s, d, waitRename, "textDocument/rename", p)
 	if err != nil {
 		return rhunext.WorkspaceEdit{}, err
 	}
 	if len(res) == 0 || string(res) == "null" {
 		return rhunext.WorkspaceEdit{}, errors.New("nothing to rename here")
 	}
-	return l.workspaceEdit(res)
+	return l.workspaceEdit(res, d)
 }
 
 func (l *lsp) Format(ext *rhunext.Ext, req rhunext.FormatRequest) rhunext.WorkspaceEdit {
@@ -523,7 +504,7 @@ func (l *lsp) Format(ext *rhunext.Ext, req rhunext.FormatRequest) rhunext.Worksp
 	if d == nil || !ready(s) {
 		return out
 	}
-	res, err := askFor(s, waitFormat, "textDocument/formatting", map[string]any{
+	res, err := askFor(s, d, waitFormat, "textDocument/formatting", map[string]any{
 		"textDocument": map[string]any{"uri": fileURI(d.path)},
 		"options":      map[string]any{"tabSize": req.TabWidth, "insertSpaces": req.Spaces}})
 	if err != nil {
@@ -540,4 +521,17 @@ func (l *lsp) Format(ext *rhunext.Ext, req rhunext.FormatRequest) rhunext.Worksp
 	}
 	out.AddDoc(req.Doc, req.Version, re...)
 	return out
+}
+
+func actionTargets(edit rhunext.WorkspaceEdit, queries []*documentQuery) []actionTarget {
+	var targets []actionTarget
+	for _, file := range edit.Files {
+		for _, q := range queries {
+			if queryMatchesTarget(q, file.Target) {
+				targets = append(targets, actionTarget{Doc: q.id, Path: q.path, Version: q.version, LSPVersion: q.lspVersion})
+				break
+			}
+		}
+	}
+	return targets
 }

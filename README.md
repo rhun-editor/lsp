@@ -34,9 +34,38 @@ project folder. Nothing is downloaded: the extension runs the server you already
 A missing server shows once in the status bar ("gopls not installed") and the language is left
 alone. **Restart Language Servers** stops them all and starts them again for the open documents.
 
-The extension keeps every open document in step with rhun through the edits stream (one
-incremental `didChange` per frame) and converts positions between rhun's byte columns and the
-protocol's UTF-16 units, so marks land on the right characters in non-ASCII lines.
+The extension follows each server's document synchronization options: full text, incremental
+changes or no changes, open/close notifications, and save notifications with optional text.
+A delayed server receives the latest document text when it becomes ready. Refreshes finish
+before pending saves, and requests whose document changes before transmission are suppressed.
+Positions convert between rhun's byte columns and UTF-16 units; a server selecting another
+position encoding is rejected with a status message.
+
+Interactive commands and deferred code actions retain open-document snapshots before execution or resolution. If typing changes
+any edited target, the host rejects the edit. Edits already returned with an action retain their
+versions from the initial request, including time spent waiting in the picker. A deferred edit for a file without a prior snapshot
+is rejected; open that file before selecting the action. Sequential command callbacks advance only
+the snapshots for their successfully applied changes. A failure rejects the remaining callbacks.
+
+## Source actions before saving
+
+Enable source kinds in rhun's Settings, such as `source.organizeImports source.fixAll`, to run
+code actions before formatting and writing. The source phase has one total timeout. Save Without
+Formatting bypasses it, and Cancel Save leaves the document unsaved. Typing during the phase
+saves the latest text and skips further automatic transforms.
+
+The bridge requests each precise source kind over the whole document, resolves deferred actions
+when the server supports resolution, and re-queries after each action using the updated text.
+Only the saving document may change. Numeric LSP edit versions are checked against the server's
+synchronized version, separately from rhun's version. A stale, foreign or unsupported edit stops
+the source phase and lets the host continue to formatting and saving with a warning.
+
+Server commands are serialized per language. Their apply-edit requests are registered in reader
+order, applied and synchronized before acknowledgement, and drained before the command finishes.
+Command-based source actions use a fresh server session after each command. A source batch also
+retires any session that previously executed a command. This prevents delayed command edits from
+joining a later save; it adds server startup time. Edit-only source actions reuse the session.
+Edits arriving outside an active command are refused.
 
 ## Settings
 
@@ -49,9 +78,77 @@ Python = pylsp
 Go = gopls -remote=auto
 ```
 
+Use `off` to disable a server, such as `Rust = off`. Commands must contain an executable.
+For arguments or paths containing spaces, use a JSON string array:
+
+```ini
+[servers]
+Go = ["gopls", "-remote=auto"]
+```
+
+`$RHUN_STATE/settings.json` supplies server settings and initialization options. Defaults apply
+to every language; a language's settings merge into them recursively. A `null` value overrides
+a default value. Language initialization options replace the default options as a whole.
+
+```json
+{
+  "defaults": {
+    "settings": {},
+    "initializationOptions": {}
+  },
+  "languages": {
+    "Go": {
+      "settings": {
+        "gopls": { "gofumpt": true }
+      }
+    }
+  }
+}
+```
+
+**Reload Language Server Settings** reloads `settings.json` and notifies running servers.
+Servers still starting receive the latest settings before becoming ready. Initialization
+options and changes to server commands take effect with **Restart Language Servers**. An
+invalid reload keeps the previous settings. An invalid restart configuration keeps the running
+servers. A missing file uses defaults. Both configuration files have a 1 MiB limit.
+
+Servers can request configuration sections, including dotted sections such as `gopls.hints`,
+and the current workspace folder. Unknown sections and unknown resource scopes return `null`
+in their matching response positions. Unsupported server requests receive a method error.
+
+Work progress appears in the extension's status text. When several languages report progress,
+the most recently updated live operation appears; ending it restores the next live operation.
+**Cancel All Language Server Work** sends cancellation for every live operation marked
+cancellable. The server decides when cancellation completes. Progress from a replaced server
+cannot overwrite its replacement's status.
+
+Language services follow the server's advertised capabilities. Servers may also register or
+remove hover, completion, signature help, definition, references, document symbols, code actions,
+rename and formatting while running. Registrations can select documents by language, URI
+scheme and path glob, including relative patterns. Invalid batches are rejected together.
+There are at most 256 registrations and 1 MiB of registration options per server. Removing a
+registration suppresses queued queries before the removal acknowledgement; requests already
+written can finish. An independent static capability remains active.
+
+## Server reliability
+
+Requests have deadlines. Completion and language features use deadlines shorter than the
+editor's own wait; initialization, hover and server commands wait at most 15 seconds. Timed
+out requests release their pending state and send best effort `$/cancelRequest` notifications.
+A server can have at most 256 pending requests.
+
+Messages are limited to 8 KiB of headers and 16 MiB of JSON, with request IDs limited to
+4 KiB and method names to 4 KiB. Configuration responses are checked cumulatively before building the full response. Invalid framing or JSON-RPC
+messages end the server connection and show the reason in its status. Writes wait at most two
+seconds. If a server stops reading its input, the extension stops it and releases pending work.
+Use **Restart Language Servers** after correcting a server failure.
+
+Exited servers are reaped immediately. The reader drains final responses before closing the
+connection, with a 500 ms limit for pipes held open by descendant processes.
+
 ## Needs
 
-Documents: read (the text, for the server; marks and hover text go back through rhun). Project:
+Documents: write (completion, code actions, rename and formatting can edit documents). Project:
 read (the server reads the project). Run: the servers above, by name; no network.
 
 ## Build and test
@@ -59,5 +156,17 @@ read (the server reads the project). Run: the servers above, by name; no network
 `tests/run.sh [RHUN]` builds the extension and a fake language server, points the extension at
 the fake through `lsp.ini`, lays everything out as rhun installs it and runs `tests/basic.txt`
 headlessly: diagnostics, marks following an edit, incremental sync agreeing with the editor,
-hover, and go to definition. Releases are built by the reusable workflow from
+hover, go to definition, configuration callbacks, reloads, progress and cancellation. Releases are built by the reusable workflow from
 `rhun-editor/extension-template`.
+
+
+Unreleased protocol 1.1 additions require the matching source SDK. Create a `go.work` outside
+these repositories with `go work init /path/to/extension-protocol /path/to/lsp`, and set
+`GOWORK` to that absolute file for builds and tests. Build the checkout's checker and pass it as
+`RHUN_EXT_CHECK` to `tests/check.sh`. CI checks out both source repositories and builds its own
+checker and host, so it does not silently validate older releases. Publish and pin the new SDK
+version before releasing an extension that uses this API.
+
+The native gate also runs `tests/source-actions.py`: sequential edits, source-kind filtering,
+resolution, command reply/edits ordering, fresh command sessions, duplicate action handling,
+versions, foreign edits, cancellation, timeout and typing during a save.

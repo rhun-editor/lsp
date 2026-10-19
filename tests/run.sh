@@ -48,3 +48,18 @@ printf 'package main\n\nfunc other() {}\n' > "$work/proj/other.go"
 printf 'package main\n\n// TODO first\nfunc main() {\n\tERR := 1\n\t_ = ERR\n}\n' > "$work/proj/main.go"
 run tests/lang.txt | sed 's/pid=[1-9][0-9]*/pid=PID/' > "$work/out.txt"
 check lang
+
+# Saving must negotiate through the real SDK, format first and then write the resulting bytes.
+printf '\n[files]\nformat_on_save = true\n' >> "$work/config/rhun/config"
+run tests/save.txt > "$work/out.txt"
+check save
+printf 'package main\n\nfunc f() {\n\tx := 1\n\t_ = x\n}\n' > "$work/saved.expected"
+if ! cmp -s "$work/proj/fmt.go" "$work/saved.expected"; then
+    echo "FAIL saved formatting"; exit 1
+fi
+
+python3 tests/callbacks.py "$RHUN"
+
+python3 tests/source-actions.py "$RHUN"
+
+python3 tests/watched-files.py "$RHUN"

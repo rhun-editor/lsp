@@ -11,8 +11,8 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/url"
 	"os"
@@ -20,6 +20,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 	"unicode/utf16"
 	"unicode/utf8"
 
@@ -62,27 +64,49 @@ var languageIDs = map[string]string{
 // ---- documents
 
 type document struct {
-	id      rhunext.Doc
-	version int64 // rhun's
-	lang    string
-	path    string
-	text    []byte
-	lspVer  int // the version we told the server
-	server  *server
+	id            rhunext.Doc
+	version       int64
+	lang, path    string
+	text          []byte
+	server        *server
+	syncMu        sync.Mutex
+	lspVer        int
+	syncedServer  *server
+	syncedVersion int64
+	opened        bool
+	syncChange    int
+	fetching      bool
+	awaiting      *server
+	pendingSave   bool
+	saveVersion   int64
 }
 
 // ---- the extension
 
 type lsp struct {
-	ext     *rhunext.Ext
-	project string
-	state   string
-	mu      sync.Mutex
-	docs    map[rhunext.Doc]*document
-	byPath  map[string]*document
-	servers map[string]*server // by language
-	config  map[string][]string
-	diags   map[string][]json.RawMessage // the server's diagnostics by path, for code actions
+	ext                            *rhunext.Ext
+	fetchText                      func(rhunext.Doc) ([]byte, int64, error)
+	project                        string
+	watcher                        *workspaceWatcher
+	state                          string
+	mu                             sync.Mutex
+	docs                           map[rhunext.Doc]*document
+	byPath                         map[string]*document
+	servers                        map[string]*server // by language
+	commandGates                   map[string]chan struct{}
+	settings                       *settingsConfig
+	configGeneration               uint64
+	statusMu                       sync.Mutex
+	statusActive                   map[string]uint64
+	progressTokens                 map[uint64]map[string]*progressEntry
+	statusGeneration, statusSerial uint64
+	statusLatest                   string
+	statusWake                     chan struct{}
+	statusDone                     chan struct{}
+	statusOnce                     sync.Once
+	stopping                       bool
+	config                         map[string][]string
+	diags                          map[string][]json.RawMessage // the server's diagnostics by path, for code actions
 }
 
 func (l *lsp) Ready(ext *rhunext.Ext, project string) {
@@ -93,107 +117,71 @@ func (l *lsp) Ready(ext *rhunext.Ext, project string) {
 	l.byPath = map[string]*document{}
 	l.servers = map[string]*server{}
 	l.diags = map[string][]json.RawMessage{}
-	l.config = readConfig(filepath.Join(l.state, "lsp.ini"))
+	l.startStatusWorker()
+	var err error
+	l.config, err = readConfig(filepath.Join(l.state, "lsp.ini"))
+	if err != nil {
+		l.config = map[string][]string{}
+		l.configError(err)
+	}
+	l.startWorkspaceWatcher()
+	l.settings, err = readSettings(filepath.Join(l.state, "settings.json"))
+	if err != nil {
+		l.settings = &settingsConfig{}
+		l.configError(err)
+	}
 }
 
 func (l *lsp) Event(ext *rhunext.Ext, ev rhunext.Event) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	switch ev.Name {
-	case "opened":
-		o, ok := rhunext.ParseOpened(ev)
-		if !ok || o.Path == "" {
-			return
-		}
-		d := &document{id: o.Doc, version: o.Version, lang: o.Lang, path: o.Path}
-		l.docs[d.id] = d
-		l.byPath[d.path] = d
-		go l.open(d)
-	case "closed":
-		var id int64
-		fmt.Sscan(argOr(ev, 0), &id)
-		if d := l.docs[rhunext.Doc(id)]; d != nil {
-			delete(l.docs, d.id)
-			delete(l.byPath, d.path)
-			if d.server != nil {
-				d.server.notify("textDocument/didClose", map[string]any{"textDocument": map[string]any{"uri": fileURI(d.path)}})
-			}
-		}
-	case "edits":
-		var id, ver int64
-		fmt.Sscan(argOr(ev, 0), &id)
-		fmt.Sscan(argOr(ev, 1), &ver)
-		d := l.docs[rhunext.Doc(id)]
-		if d == nil || d.text == nil {
-			return
-		}
-		edits, err := rhunext.ParseEdits(ev.Body)
-		if err != nil {
-			ext.Logf("edits: %v", err)
-			go l.resync(d)
-			return
-		}
-		changes := make([]map[string]any, 0, len(edits))
-		for _, e := range edits {
-			if e.Start < 0 || e.Start+e.Del > len(d.text) {
-				go l.resync(d)
-				return
-			}
-			rg := map[string]any{"start": lspPos(d.text, e.Start), "end": lspPos(d.text, e.Start+e.Del)}
-			changes = append(changes, map[string]any{"range": rg, "text": string(e.Ins)})
-			next := make([]byte, 0, len(d.text)-e.Del+len(e.Ins))
-			next = append(next, d.text[:e.Start]...)
-			next = append(next, e.Ins...)
-			next = append(next, d.text[e.Start+e.Del:]...)
-			d.text = next
-		}
-		d.version = ver
-		if d.server != nil && d.server.ready {
-			d.lspVer++
-			d.server.notify("textDocument/didChange", map[string]any{
-				"textDocument":   map[string]any{"uri": fileURI(d.path), "version": d.lspVer},
-				"contentChanges": changes,
-			})
-		}
-	case "resync":
-		var id int64
-		fmt.Sscan(argOr(ev, 0), &id)
-		if d := l.docs[rhunext.Doc(id)]; d != nil {
-			go l.resync(d)
-		}
-	case "saved":
-		var id int64
-		fmt.Sscan(argOr(ev, 0), &id)
-		if d := l.docs[rhunext.Doc(id)]; d != nil && d.server != nil && d.server.ready {
-			d.server.notify("textDocument/didSave", map[string]any{"textDocument": map[string]any{"uri": fileURI(d.path)}})
-		}
-	case "hover":
-		id, at, ok := rhunext.ParseHover(ev)
-		if !ok {
-			return
-		}
-		if d := l.docs[id]; d != nil && d.server != nil && d.server.ready && d.text != nil {
-			go l.hover(d, at)
-		}
-	}
+	l.workspaceWatchEvent(ev)
+	l.documentEvent(ev)
 }
 
 func (l *lsp) Run(ext *rhunext.Ext, command string, doc rhunext.Doc) {
 	switch command {
+	case "lsp.reload_configuration":
+		if err := l.reloadSettings(); err != nil {
+			l.configError(err)
+		} else {
+			ext.Toast("Language server settings reloaded. Restart to apply initialization options.")
+		}
+	case "lsp.cancel_progress":
+		if l.cancelProgress() == 0 {
+			ext.Toast("No cancellable language server work")
+		}
 	case "lsp.restart":
+		commands, err := readConfig(filepath.Join(l.state, "lsp.ini"))
+		if err != nil {
+			l.configError(err)
+			return
+		}
+		settings, err := readSettings(filepath.Join(l.state, "settings.json"))
+		if err != nil {
+			l.configError(err)
+			return
+		}
 		l.mu.Lock()
+		l.config, l.settings = commands, settings
+		l.configGeneration++
+		var oldServers []*server
 		for lang, s := range l.servers {
 			if s != nil {
-				s.stop()
+				l.retireStatus(s)
+				oldServers = append(oldServers, s)
 			}
 			delete(l.servers, lang)
 		}
 		docs := make([]*document, 0, len(l.docs))
 		for _, d := range l.docs {
 			d.server = nil
+			d.syncedServer = nil
+			d.opened = false
 			docs = append(docs, d)
 		}
 		l.mu.Unlock()
+		for _, s := range oldServers {
+			s.stop()
+		}
 		for _, d := range docs {
 			go l.open(d)
 		}
@@ -201,50 +189,15 @@ func (l *lsp) Run(ext *rhunext.Ext, command string, doc rhunext.Doc) {
 	}
 }
 
-// open fetches the text, starts the language's server if needed, and tells it about the document.
-func (l *lsp) open(d *document) {
-	text, version, err := l.ext.Text(d.id)
-	if err != nil {
-		return
-	}
-	l.mu.Lock()
-	d.text, d.version = text, version
-	s := l.serverFor(d.lang)
-	d.server = s
-	l.mu.Unlock()
-	if s == nil {
-		return
-	}
-	s.waitReady()
-	if !s.ready {
-		return
-	}
-	d.lspVer = 1
-	s.notify("textDocument/didOpen", map[string]any{"textDocument": map[string]any{
-		"uri": fileURI(d.path), "languageId": languageIDs[d.lang], "version": d.lspVer, "text": string(text)}})
-}
-
-func (l *lsp) resync(d *document) {
-	text, version, err := l.ext.Text(d.id)
-	if err != nil {
-		return
-	}
-	l.mu.Lock()
-	d.text, d.version = text, version
-	s := d.server
-	l.mu.Unlock()
-	if s != nil && s.ready {
-		d.lspVer++
-		s.notify("textDocument/didChange", map[string]any{
-			"textDocument":   map[string]any{"uri": fileURI(d.path), "version": d.lspVer},
-			"contentChanges": []map[string]any{{"text": string(text)}},
-		})
-	}
-}
+func (l *lsp) open(d *document)   { l.fetchDocument(d) }
+func (l *lsp) resync(d *document) { l.fetchDocument(d) }
 
 // serverFor returns the running server for a language, starting it on first use; nil when
 // there is none for the language or it cannot start. Called with l.mu held.
 func (l *lsp) serverFor(lang string) *server {
+	if l.stopping {
+		return nil
+	}
 	if s, ok := l.servers[lang]; ok {
 		return s
 	}
@@ -252,12 +205,14 @@ func (l *lsp) serverFor(lang string) *server {
 	if argv == nil {
 		argv = servers[lang]
 	}
-	if argv == nil {
+	if len(argv) == 0 {
 		l.servers[lang] = nil
 		return nil
 	}
 	if _, err := exec.LookPath(argv[0]); err != nil {
-		l.ext.Status(filepath.Base(argv[0]) + " not installed")
+		l.statusMu.Lock()
+		l.publishStatusLocked(filepath.Base(argv[0]) + " not installed")
+		l.statusMu.Unlock()
 		l.servers[lang] = nil
 		return nil
 	}
@@ -267,43 +222,40 @@ func (l *lsp) serverFor(lang string) *server {
 	return s
 }
 
-func (l *lsp) hover(d *document, at rhunext.Pos) {
-	l.mu.Lock()
-	off := byteOffset(d.text, at)
-	pos := lspPos(d.text, off)
-	l.mu.Unlock()
-	res, err := d.server.call("textDocument/hover", map[string]any{
-		"textDocument": map[string]any{"uri": fileURI(d.path)}, "position": pos})
-	if err != nil || res == nil {
-		return
-	}
-	var h struct {
-		Contents json.RawMessage `json:"contents"`
-	}
-	if json.Unmarshal(res, &h) != nil {
-		return
-	}
-	text := hoverText(h.Contents)
-	if text != "" {
-		l.ext.Hover(d.id, at, text)
-	}
-}
-
 // ---- a language server
 
 type server struct {
-	l       *lsp
-	lang    string
-	argv    []string
-	cmd     *exec.Cmd
-	in      io.WriteCloser
-	wmu     sync.Mutex
-	nextID  int
-	pmu     sync.Mutex
-	pending map[int]chan json.RawMessage
-	ready   bool
-	readyCh chan struct{}
-	caps    json.RawMessage
+	l                  *lsp
+	lang               string
+	argv               []string
+	cmd                *exec.Cmd
+	in                 io.WriteCloser
+	out                io.ReadCloser
+	writeGate          chan struct{}
+	cancelOnce         sync.Once
+	cancels            chan int
+	waitDone           chan struct{}
+	processExited      atomic.Bool
+	nextID             int
+	pmu                sync.Mutex
+	pending            map[int]chan json.RawMessage
+	ready              atomic.Bool
+	ended              atomic.Bool
+	stateMu            sync.Mutex
+	configMu           sync.Mutex
+	done               chan struct{}
+	generation         uint64
+	readyCh            chan struct{}
+	capMu              sync.RWMutex
+	staticCapabilities map[string]bool
+	staticResolve      bool
+	registrations      map[string]capabilityRegistration
+	syncOptions        synchronizationOptions
+	syncGeneration     uint64
+	watchGeneration    uint64
+	commandMu          sync.Mutex
+	commandCapture     *commandCapture
+	commandUsed        atomic.Bool
 }
 
 type location struct {
@@ -322,46 +274,47 @@ type lspRange struct {
 }
 
 func newServer(l *lsp, lang string, argv []string) *server {
-	return &server{l: l, lang: lang, argv: argv, pending: map[int]chan json.RawMessage{}, readyCh: make(chan struct{})}
+	s := &server{l: l, lang: lang, argv: argv, pending: map[int]chan json.RawMessage{}, readyCh: make(chan struct{}), done: make(chan struct{}), writeGate: make(chan struct{}, 1), cancels: make(chan int, 128), waitDone: make(chan struct{}), registrations: map[string]capabilityRegistration{}}
+	l.activateStatus(s)
+	return s
 }
 
 func (s *server) start() {
 	defer func() {
-		if !s.ready {
-			close(s.readyCh)
+		if !s.ready.Load() {
+			s.endServer("")
 		}
+		close(s.readyCh)
 	}()
-	s.cmd = exec.Command(s.argv[0], s.argv[1:]...)
-	s.cmd.Dir = s.l.project
-	s.cmd.Stderr = os.Stderr
-	in, err := s.cmd.StdinPipe()
+	out, err := s.launch()
 	if err != nil {
+		s.endServer(s.name() + ": " + err.Error())
 		return
 	}
-	out, err := s.cmd.StdoutPipe()
-	if err != nil {
-		return
+	s.status(s.name()+": starting", false)
+	go s.read(bufio.NewReaderSize(out, maxRPCHeader))
+	s.l.mu.Lock()
+	options := s.l.settings.forLanguage(s.lang).InitializationOptions
+	folders := s.l.workspaceFolders()
+	var root any
+	if s.l.project != "" && s.l.project != "-" {
+		root = fileURI(s.l.project)
 	}
-	if err := s.cmd.Start(); err != nil {
-		s.l.ext.Status(s.name() + " failed to start")
-		return
-	}
-	s.in = in
-	s.l.ext.Status(s.name() + ": starting")
-	go s.read(bufio.NewReaderSize(out, 1<<20))
-	root := fileURI(s.l.project)
-	res, err := s.call("initialize", map[string]any{
+	s.l.mu.Unlock()
+	initializeParams := map[string]any{
 		"processId": os.Getpid(), "rootUri": root,
-		"workspaceFolders": []map[string]any{{"uri": root, "name": filepath.Base(s.l.project)}},
+		"workspaceFolders":      folders,
+		"initializationOptions": options,
 		"capabilities": map[string]any{
 			"textDocument": map[string]any{
-				"synchronization":    map[string]any{"didSave": true},
+				"synchronization":    map[string]any{"didSave": true, "dynamicRegistration": true},
 				"publishDiagnostics": map[string]any{"versionSupport": true},
 				"hover":              map[string]any{"contentFormat": []string{"plaintext", "markdown"}},
 				"definition":         map[string]any{"linkSupport": true},
 				"references":         map[string]any{},
 				"documentSymbol":     map[string]any{"hierarchicalDocumentSymbolSupport": true},
 				"codeAction": map[string]any{"isPreferredSupport": true, "disabledSupport": true,
+					"dataSupport": true, "resolveSupport": map[string]any{"properties": []string{"edit", "command"}},
 					"codeActionLiteralSupport": map[string]any{"codeActionKind": map[string]any{"valueSet": []string{
 						"", "quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite", "source",
 						"source.organizeImports", "source.fixAll"}}}},
@@ -373,127 +326,82 @@ func (s *server) start() {
 					"documentationFormat":  []string{"plaintext", "markdown"},
 					"parameterInformation": map[string]any{"labelOffsetSupport": true}, "activeParameterSupport": true}},
 			},
-			"workspace": map[string]any{"applyEdit": true, "executeCommand": map[string]any{},
+			"window": map[string]any{"workDoneProgress": true},
+			"workspace": map[string]any{"configuration": true, "workspaceFolders": true, "applyEdit": true, "executeCommand": map[string]any{},
 				"workspaceEdit": map[string]any{"documentChanges": true, "resourceOperations": []string{}}},
 			"general": map[string]any{"positionEncodings": []string{"utf-16"}},
-		},
-	})
+		}}
+	if s.l.workspaceWatchAvailable() {
+		initializeParams["capabilities"].(map[string]any)["workspace"].(map[string]any)["didChangeWatchedFiles"] = map[string]any{"dynamicRegistration": true, "relativePatternSupport": true}
+	}
+	textCaps := initializeParams["capabilities"].(map[string]any)["textDocument"].(map[string]any)
+	for method := range capabilityFields {
+		name := strings.TrimPrefix(method, "textDocument/")
+		if options, ok := textCaps[name].(map[string]any); ok {
+			options["dynamicRegistration"] = true
+		}
+	}
+	res, err := s.call("initialize", initializeParams)
 	if err != nil {
-		s.l.ext.Status(s.name() + ": " + err.Error())
+		s.endServer(s.name() + ": " + err.Error())
 		return
 	}
-	s.caps = res
+	if err := s.loadSynchronization(res); err != nil {
+		s.endServer(s.name() + ": " + err.Error())
+		return
+	}
+	if err := s.loadCapabilities(res); err != nil {
+		s.endServer(s.name() + ": " + err.Error())
+		return
+	}
 	s.notify("initialized", map[string]any{})
-	s.ready = true
-	close(s.readyCh)
-	s.l.ext.Status(s.name())
+	if err := s.publishReady(); err != nil {
+		s.endServer(s.name() + ": " + err.Error())
+		return
+	}
+	s.status(s.name(), false)
 }
 
 func (s *server) waitReady() { <-s.readyCh }
 
-func (s *server) name() string { return filepath.Base(s.argv[0]) }
-
-func (s *server) stop() {
-	if s.cmd != nil && s.cmd.Process != nil {
-		s.notify("exit", nil)
-		s.cmd.Process.Kill()
+func (s *server) name() string {
+	if len(s.argv) == 0 {
+		return s.lang
 	}
+	return filepath.Base(s.argv[0])
 }
 
-func (s *server) write(msg any) error {
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	s.wmu.Lock()
-	defer s.wmu.Unlock()
-	if s.in == nil {
-		return fmt.Errorf("server not running")
-	}
-	if _, err := fmt.Fprintf(s.in, "Content-Length: %d\r\n\r\n", len(data)); err != nil {
-		return err
-	}
-	_, err = s.in.Write(data)
-	return err
-}
-
-func (s *server) notify(method string, params any) {
-	s.write(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
-}
-
-func (s *server) call(method string, params any) (json.RawMessage, error) {
-	s.pmu.Lock()
-	s.nextID++
-	id := s.nextID
-	ch := make(chan json.RawMessage, 1)
-	s.pending[id] = ch
-	s.pmu.Unlock()
-	if err := s.write(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params}); err != nil {
-		return nil, err
-	}
-	res, ok := <-ch
-	if !ok {
-		return nil, fmt.Errorf("server went away")
-	}
-	var r struct {
-		Result json.RawMessage `json:"result"`
-		Error  *struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(res, &r); err != nil {
-		return nil, err
-	}
-	if r.Error != nil {
-		return nil, fmt.Errorf("%s", r.Error.Message)
-	}
-	return r.Result, nil
-}
+func (s *server) stop() { s.endServer("") }
 
 func (s *server) read(br *bufio.Reader) {
-	defer func() {
-		s.pmu.Lock()
-		for id, ch := range s.pending {
-			close(ch)
-			delete(s.pending, id)
-		}
-		s.pmu.Unlock()
-		s.l.ext.Status(s.name() + " exited")
-	}()
+	defer s.endServer("")
 	for {
-		length := -1
-		for {
-			line, err := br.ReadString('\n')
-			if err != nil {
-				return
+		body, err := readRPC(br)
+		if err != nil {
+			if err != io.EOF && !s.ended.Load() {
+				s.endServer(s.name() + ": " + err.Error())
 			}
-			line = strings.TrimRight(line, "\r\n")
-			if line == "" {
-				break
-			}
-			if v, ok := strings.CutPrefix(line, "Content-Length: "); ok {
-				fmt.Sscan(v, &length)
-			}
-		}
-		if length < 0 {
 			return
 		}
-		body := make([]byte, length)
-		if _, err := io.ReadFull(br, body); err != nil {
+		var envelope map[string]json.RawMessage
+		if err := json.Unmarshal(body, &envelope); err != nil {
+			s.endServer(s.name() + ": invalid JSON-RPC message")
 			return
 		}
-		var msg struct {
-			ID     json.RawMessage `json:"id"`
-			Method string          `json:"method"`
-			Params json.RawMessage `json:"params"`
-		}
-		if json.Unmarshal(body, &msg) != nil {
-			continue
+		msg := struct {
+			ID, Params json.RawMessage
+			Method     string
+		}{ID: envelope["id"], Params: envelope["params"]}
+		if raw, ok := envelope["method"]; ok {
+			json.Unmarshal(raw, &msg.Method)
 		}
 		switch {
 		case msg.Method == "" && len(msg.ID) > 0:
 			var id int
-			json.Unmarshal(msg.ID, &id)
+			if json.Unmarshal(msg.ID, &id) != nil {
+				continue
+			}
+			s.closeCommandReply(id)
 			s.pmu.Lock()
 			ch := s.pending[id]
 			delete(s.pending, id)
@@ -501,13 +409,18 @@ func (s *server) read(br *bufio.Reader) {
 			if ch != nil {
 				ch <- body
 			}
+		case msg.Method == "$/progress":
+			s.progress(msg.Params)
 		case msg.Method == "textDocument/publishDiagnostics":
 			s.publish(msg.Params)
 		case msg.Method == "workspace/applyEdit" && len(msg.ID) > 0:
-			go s.applyEdit(msg.ID, msg.Params)
+			if capture := s.admitCommandEdit(); capture != nil {
+				go s.applyCommandEdit(capture, msg.ID, msg.Params)
+			} else {
+				s.rejectCommandEdit(msg.ID, "no active command accepts this edit")
+			}
 		case len(msg.ID) > 0:
-			// a request from the server: configuration, registrations, progress: answered with null
-			s.write(map[string]any{"jsonrpc": "2.0", "id": msg.ID, "result": nil})
+			s.serverRequest(msg.ID, msg.Method, msg.Params)
 		}
 	}
 }
@@ -630,7 +543,15 @@ func rhunPos(text []byte, p lspPosition) rhunext.Pos {
 }
 
 func fileURI(path string) string {
-	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+	path = filepath.ToSlash(path)
+	if len(path) >= 2 && path[1] == ':' {
+		path = "/" + path
+	}
+	if strings.HasPrefix(path, "//") {
+		host, tail, _ := strings.Cut(path[2:], "/")
+		return (&url.URL{Scheme: "file", Host: host, Path: "/" + tail}).String()
+	}
+	return (&url.URL{Scheme: "file", Path: path}).String()
 }
 
 func uriPath(uri string) string {
@@ -638,7 +559,14 @@ func uriPath(uri string) string {
 	if err != nil || u.Scheme != "file" {
 		return uri
 	}
-	return filepath.FromSlash(u.Path)
+	path := u.Path
+	if len(path) >= 3 && path[0] == '/' && path[2] == ':' {
+		path = path[1:]
+	}
+	if u.Host != "" && u.Host != "localhost" {
+		path = "//" + u.Host + path
+	}
+	return filepath.FromSlash(path)
 }
 
 // hoverText turns MarkupContent, MarkedString or their arrays into plain-ish text.
@@ -691,32 +619,9 @@ func unmark(s string) string {
 	return text
 }
 
-func readConfig(path string) map[string][]string {
-	out := map[string][]string{}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return out
-	}
-	section := ""
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || line[0] == '#' {
-			continue
-		}
-		if line[0] == '[' && strings.HasSuffix(line, "]") {
-			section = line[1 : len(line)-1]
-			continue
-		}
-		if section != "servers" {
-			continue
-		}
-		k, v, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		out[strings.TrimSpace(k)] = strings.Fields(v)
-	}
-	return out
+func (l *lsp) configError(err error) {
+	l.ext.Logf("configuration: %v", err)
+	go l.ext.Toast("Language server configuration: " + err.Error())
 }
 
 func argOr(ev rhunext.Event, i int) string {
@@ -728,8 +633,44 @@ func argOr(ev rhunext.Event, i int) string {
 
 func main() {
 	features := []string{rhunext.FeatureComplete, rhunext.FeatureSignature, rhunext.FeatureDefinition,
-		rhunext.FeatureReferences, rhunext.FeatureSymbols, rhunext.FeatureActions, rhunext.FeatureRename, rhunext.FeatureFormat}
-	if err := rhunext.RunWith(features, &lsp{}); err != nil {
+		rhunext.FeatureReferences, rhunext.FeatureSymbols, rhunext.FeatureActions, rhunext.FeatureRename, rhunext.FeatureFormat, rhunext.FeatureSaveActions, rhunext.FeatureWorkspaceWatch}
+	l := &lsp{}
+	err := rhunext.RunWith(features, l)
+	l.shutdown()
+	if err != nil {
 		os.Exit(1)
+	}
+}
+
+func (l *lsp) shutdown() {
+	l.stopWorkspaceWatcher()
+	l.closeStatus()
+	l.mu.Lock()
+	l.stopping = true
+	var old []*server
+	for _, s := range l.servers {
+		if s != nil {
+			old = append(old, s)
+		}
+	}
+	l.mu.Unlock()
+	for _, s := range old {
+		s.stop()
+	}
+	// All children have already received Kill and their pipes are closed. Bound
+	// the aggregate reap wait so shutdown remains responsive on every platform.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for _, s := range old {
+		s.stateMu.Lock()
+		launched := s.cmd != nil
+		s.stateMu.Unlock()
+		if launched {
+			select {
+			case <-s.waitDone:
+			case <-ctx.Done():
+				return
+			}
+		}
 	}
 }
