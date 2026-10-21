@@ -1,6 +1,6 @@
 rhun-editor/lsp state=idle pid=0 cmds=lsp.restart,lsp.reload_configuration,lsp.cancel_progress confined=0
 ext=lsp state=running
-rhun-editor/lsp state=running pid=PID cmds=lsp.restart,lsp.reload_configuration,lsp.cancel_progress confined=1 status=gopls
+rhun-editor/lsp state=running pid=PID cmds=lsp.restart,lsp.reload_configuration,lsp.cancel_progress,lsp.exec confined=1 status=gopls
 3 4 3 8 warning problems:rhun-editor/lsp TODO here
 5 2 5 5 error problems:rhun-editor/lsp ERR here
 6 6 6 9 error problems:rhun-editor/lsp ERR here

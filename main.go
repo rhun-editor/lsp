@@ -119,6 +119,7 @@ type lsp struct {
 	diagRunning                    bool
 	pullMu                         sync.Mutex
 	pulls                          map[*document]*pullState
+	execReady                      atomic.Bool // the exec command is registered (codeactions.go)
 }
 
 func (l *lsp) Ready(ext *rhunext.Ext, project string) {
@@ -143,6 +144,7 @@ func (l *lsp) Ready(ext *rhunext.Ext, project string) {
 		l.settings = &settingsConfig{}
 		l.configError(err)
 	}
+	l.registerExec()
 }
 
 func (l *lsp) Event(ext *rhunext.Ext, ev rhunext.Event) {
@@ -722,7 +724,9 @@ func main() {
 		// the hover card, Expand Selection, hierarchies, Go to Symbol in Project, links, the
 		// Problems store, and Markdown documentation where rhun renders it
 		rhunext.FeatureHoverQuery, rhunext.FeatureSelectionRanges, rhunext.FeatureHierarchy, rhunext.FeatureWorkspaceSymbols,
-		rhunext.FeatureDocumentLinks, rhunext.FeatureFileDiagnostics, featureMarkdown}
+		rhunext.FeatureDocumentLinks, rhunext.FeatureFileDiagnostics, featureMarkdown,
+		// commands invoked with a body: a code action's server command is a command reference
+		rhunext.FeatureCommandArgs}
 	l := &lsp{}
 	err := rhunext.RunWith(features, l)
 	l.shutdown()

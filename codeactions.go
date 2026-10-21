@@ -3,12 +3,14 @@ package main
 // Code actions of protocol 1.1 (feature code-actions): rhun's kinds become the request's only,
 // its diagnostic ids (or the diagnostics in the range) the context's diagnostics, its trigger the
 // trigger kind. Hierarchical kinds, isPreferred, disabled reasons and the diagnostics an action
-// fixes go back as they are. An action with a ready edit is applied by rhun. One that needs the
-// server's codeAction/resolve, or that runs a server command, carries resolve data: a key to the
-// action the extension keeps. Resolving asks the server and hands rhun the edit; an action with a
-// command is run by the extension itself (its edit applied first, then workspace/executeCommand,
-// whose workspace/applyEdit requests become apply requests), since command references need
-// command-args, which the Go SDK does not deliver yet.
+// fixes go back as they are. An action's edit is applied by rhun; one that needs the server's
+// codeAction/resolve carries resolve data, a key to the action the extension keeps, and resolving
+// asks the server. A server command becomes a command reference (feature command-args) to the
+// extension's runtime command exec, whose ARGS name the server and the command with its
+// arguments: rhun runs it after the edit and the extension sends workspace/executeCommand, whose
+// workspace/applyEdit requests become apply requests. Without command-args an action with a
+// command carries resolve data and the extension runs it (after applying the edit itself) when
+// it is resolved.
 
 import (
 	"context"
@@ -156,6 +158,9 @@ func (l *lsp) CodeActions(ext *rhunext.Ext, req rhunext.CodeActionsRequest) []rh
 			if err != nil {
 				continue
 			}
+			if act.Command = l.execRef(s, *cmd); act.Command != nil {
+				break
+			}
 			base.Command = *cmd
 			act.Resolve = later(base)
 		case edit:
@@ -167,6 +172,13 @@ func (l *lsp) CodeActions(ext *rhunext.Ext, req rhunext.CodeActionsRequest) []rh
 			if !command {
 				act.Edit = &converted
 				break
+			}
+			if cmd, err := sourceCommand(a); err == nil {
+				// rhun applies the edit and then runs the command
+				if act.Command = l.execRef(s, *cmd); act.Command != nil {
+					act.Edit = &converted
+					break
+				}
 			}
 			// the extension applies the edit and then runs the command
 			action := a
@@ -225,17 +237,115 @@ func (l *lsp) ResolveCodeAction(ext *rhunext.Ext, req rhunext.CodeActionResolveR
 	if resolved.Disabled != nil {
 		return rhunext.ResolvedAction{}, errors.New(resolved.Disabled.Reason)
 	}
+	var out rhunext.ResolvedAction
 	if actionHasCommand(resolved) {
-		next := actionData{Lang: a.Lang, Generation: a.Generation, Prepared: &resolved, Doc: req.Doc, Version: req.Version}
-		go l.runExplicitCommand(next)
-		return rhunext.ResolvedAction{}, nil
+		if cmd, err := sourceCommand(resolved); err == nil {
+			out.Command = l.execRef(s, *cmd)
+		}
+		if out.Command == nil {
+			next := actionData{Lang: a.Lang, Generation: a.Generation, Prepared: &resolved, Doc: req.Doc, Version: req.Version}
+			go l.runExplicitCommand(next)
+			return rhunext.ResolvedAction{}, nil
+		}
 	}
-	if !actionHasEdit(resolved) {
-		return rhunext.ResolvedAction{}, nil
+	if actionHasEdit(resolved) {
+		edit, err := l.commandWorkspaceEdit(resolved.Edit, s, l.commandQuerySnapshots(s, d)...)
+		if err != nil {
+			return rhunext.ResolvedAction{}, err
+		}
+		out.Edit = &edit
 	}
-	edit, err := l.commandWorkspaceEdit(resolved.Edit, s, l.commandQuerySnapshots(s, d)...)
+	return out, nil
+}
+
+// ---- server commands as command references (feature command-args)
+
+// execArgs are the ARGS of a reference to the exec command: the server (its language and
+// generation, so a restarted server's command is refused) and the command with its arguments
+type execArgs struct {
+	Lang       string     `json:"l"`
+	Generation uint64     `json:"g"`
+	Command    lspCommand `json:"c"`
+}
+
+// execCommand is the runtime command that runs a server command from a code action
+const execCommand = "exec"
+
+// registerExec registers exec when rhun agreed command-args; until then (and on rhun builds
+// without the feature) server commands go through resolve data
+func (l *lsp) registerExec() {
+	if !l.has(rhunext.FeatureCommandArgs) {
+		return
+	}
+	if err := l.ext.Register(execCommand, "", "Run Language Server Command"); err != nil {
+		l.ext.Logf("register %s: %v", execCommand, err)
+		return
+	}
+	l.execReady.Store(true)
+}
+
+// execRef is the command reference that runs a server command of s, nil without command-args
+// or when its ARGS would be over rhun's limit
+func (l *lsp) execRef(s *server, cmd lspCommand) *rhunext.CommandRef {
+	if !l.execReady.Load() || !l.has(rhunext.FeatureCommandArgs) {
+		return nil
+	}
+	args, err := json.Marshal(execArgs{Lang: s.lang, Generation: s.generation, Command: cmd})
+	if err != nil || len(args) > rhunext.MaxRefArgs {
+		return nil
+	}
+	return &rhunext.CommandRef{Name: execCommand, Args: args}
+}
+
+// Invoke receives the extension's commands with how they were invoked (feature command-args):
+// exec from a code action's reference runs its server command, the others are Run's
+func (l *lsp) Invoke(ext *rhunext.Ext, inv rhunext.Invocation) {
+	if inv.Name() != execCommand {
+		l.Run(ext, inv.Command, inv.Doc)
+		return
+	}
+	var a execArgs
+	if inv.From != rhunext.FromRef || json.Unmarshal(inv.Body, &a) != nil || a.Command.Command == "" {
+		go ext.Toast("Language server commands run from code actions (ctrl+.)")
+		return
+	}
+	go func() {
+		l.catchUp(inv.Doc)
+		l.runExplicitCommand(actionData{Lang: a.Lang, Generation: a.Generation, Command: a.Command})
+	}()
+}
+
+// catchUp brings the document and its server to the text rhun has now: rhun may run a reference's
+// command before the edits its action just made reach the extension
+func (l *lsp) catchUp(doc rhunext.Doc) {
+	if doc == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	text, version, err := l.ext.TextContext(ctx, doc)
 	if err != nil {
-		return rhunext.ResolvedAction{}, err
+		return
 	}
-	return rhunext.ResolvedAction{Edit: &edit}, nil
+	l.mu.Lock()
+	d := l.docs[doc]
+	l.mu.Unlock()
+	if d == nil {
+		return
+	}
+	d.syncMu.Lock()
+	defer d.syncMu.Unlock()
+	l.mu.Lock()
+	if l.stopping || l.docs[doc] != d {
+		l.mu.Unlock()
+		return
+	}
+	if version > d.version {
+		d.text, d.version = append([]byte{}, text...), version
+	}
+	s := d.server
+	l.mu.Unlock()
+	if s != nil && s.ready.Load() {
+		l.synchronizeLocked(d, s, nil)
+	}
 }

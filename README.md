@@ -65,9 +65,11 @@ calls show as the server sends partial results, its progress shows on the reques
 withdrawing a request (Escape, a new query) cancels it on the server. Diagnostics carry their
 codes, links, tags and related places into the Problems panel, and code actions get back the
 diagnostics they are about by id. Code actions are listed by kind with the server's preferred
-fix and disabled reasons; actions the server resolves lazily are resolved when chosen, and an
-action that runs a server command is run by the extension after its edit (the server's edits
-come back as one apply request each). Hover text and documentation are Markdown where rhun
+fix and disabled reasons; actions the server resolves lazily are resolved when chosen. An
+action's server command is a reference to the extension's runtime command `lsp.exec`: rhun runs
+it after the action's edit, and the extension sends the command to the server, whose edits come
+back as one apply request each (rhun builds without `command-args` get the command run by the
+extension when the action is chosen). Hover text and documentation are Markdown where rhun
 renders it, else plain text. Servers that offer diagnostics on request are asked for an open
 document's after it changes.
 

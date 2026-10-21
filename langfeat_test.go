@@ -510,3 +510,82 @@ const line3 = "func é() { total := 1 }"
 func locRecord(rangeFields string) string {
 	return fmt.Sprintf("%s 16 %d\n/project/main.go%s", rangeFields, len(line3), line3)
 }
+
+func TestCodeActionCommandsAsReferences(t *testing.T) {
+	edit := map[string]any{"changes": map[string]any{uri: []any{map[string]any{"range": rng(2, 11, 2, 16), "newText": "_"}}}}
+	h := newHarness(t, append(allFeatures, rhunext.FeatureCommandArgs), `{"codeActionProvider":{"resolveProvider":true},"executeCommandProvider":{"commands":["fix"]}}`, sample,
+		func(f *fakeLSP, method string, id, params json.RawMessage) (any, bool) {
+			switch method {
+			case "textDocument/codeAction":
+				return []any{
+					map[string]any{"title": "Run it", "command": "fix", "arguments": []any{"b", map[string]any{"n": 1}}},
+					map[string]any{"title": "Both", "kind": "source.fixAll", "edit": edit, "command": map[string]any{"title": "Both", "command": "fix", "arguments": []any{"a"}}},
+					map[string]any{"title": "Later", "kind": "refactor", "data": 1},
+				}, true
+			case "codeAction/resolve":
+				return map[string]any{"title": "Later", "kind": "refactor", "edit": edit, "command": map[string]any{"title": "Later", "command": "fix", "arguments": []any{"c"}}}, true
+			}
+			return nil, true
+		})
+	var registered []string
+	h.host.replyTo = func(r hostRequest) string {
+		if r.verb == "register" {
+			registered = append(registered, strings.Join(r.args, " "))
+		}
+		return ""
+	}
+	h.l.registerExec()
+	if len(registered) != 1 || !strings.HasPrefix(registered[0], "exec - ") {
+		t.Fatal(registered)
+	}
+	acts := parseActions(t, h.host.ask("code-actions 1 1 3 13 3 18 invoked - -", nil).body)
+	if len(acts) != 3 {
+		t.Fatal(acts)
+	}
+	args, ok := extraRecord(acts[0].extra, "command")
+	if !ok || !strings.HasPrefix(acts[0].extra, "command exec ") {
+		t.Fatalf("%q", acts[0].extra)
+	}
+	var a execArgs
+	if json.Unmarshal([]byte(args), &a) != nil || a.Lang != "Go" || a.Generation != h.s.generation || a.Command.Command != "fix" || len(a.Command.Arguments) != 2 {
+		t.Fatalf("%q", args)
+	}
+	if _, ok := extraRecord(acts[0].extra, "resolve"); ok {
+		t.Fatal("a command referenced and resolved")
+	}
+	// an edit and a command: rhun applies the edit, then runs the reference
+	if !strings.Contains(acts[1].edit, "3 13 3 18 1\n_") {
+		t.Fatalf("%q", acts[1].edit)
+	}
+	if args, ok := extraRecord(acts[1].extra, "command"); !ok || !strings.Contains(args, `"arguments":["a"]`) {
+		t.Fatalf("%q", acts[1].extra)
+	}
+	// rhun runs the reference: the server gets workspace/executeCommand
+	h.host.write(fmt.Sprintf("0 run lsp.exec 1 ref %d\n%s", len(args), args))
+	exec := h.srv.await("workspace/executeCommand")["params"].(map[string]any)
+	if exec["command"] != "fix" || len(exec["arguments"].([]any)) != 2 || exec["arguments"].([]any)[0] != "b" {
+		t.Fatal(exec)
+	}
+	// resolving an action whose resolution has a command: the edit and the reference
+	data, _ := extraRecord(acts[2].extra, "resolve")
+	r := h.host.ask("code-action-resolve 1 1 "+itoa(len(data)), []byte(data))
+	if !r.ok || !strings.Contains(string(r.body), "3 13 3 18 1\n_command exec ") || !strings.Contains(string(r.body), `"arguments":["c"]`) {
+		t.Fatalf("%q", r.body)
+	}
+	// from the palette it explains itself; the manifest's commands are Run's
+	toasts := make(chan string, 4)
+	h.host.replyTo = func(r hostRequest) string {
+		if r.verb == "toast" {
+			toasts <- string(r.body)
+		}
+		return ""
+	}
+	h.host.write("0 run lsp.exec 1 palette 0\n")
+	if got := <-toasts; !strings.Contains(got, "code actions") {
+		t.Fatal(got)
+	}
+	h.host.write("0 run lsp.cancel_progress 1 palette 0\n")
+	if got := <-toasts; got != "No cancellable language server work" {
+		t.Fatal(got)
+	}
+}
