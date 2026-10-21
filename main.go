@@ -119,7 +119,9 @@ type lsp struct {
 	diagRunning                    bool
 	pullMu                         sync.Mutex
 	pulls                          map[*document]*pullState
-	execReady                      atomic.Bool    // the exec command is registered (codeactions.go)
+	execReady                      atomic.Bool       // the exec command is registered (codeactions.go)
+	folders                        []workspaceFolder // rhun's workspace folders (folders.go)
+	foldersKnown                   bool
 	pending                        pendingFileOps // file operations of edits answered to rhun
 }
 
@@ -149,6 +151,9 @@ func (l *lsp) Ready(ext *rhunext.Ext, project string) {
 }
 
 func (l *lsp) Event(ext *rhunext.Ext, ev rhunext.Event) {
+	if l.folderEvent(ev) {
+		return
+	}
 	l.workspaceWatchEvent(ev)
 	l.documentEvent(ev)
 	l.fileOpEvent(ev)
@@ -244,41 +249,45 @@ func (l *lsp) serverFor(lang string) *server {
 // ---- a language server
 
 type server struct {
-	l                  *lsp
-	lang               string
-	argv               []string
-	cmd                *exec.Cmd
-	in                 io.WriteCloser
-	out                io.ReadCloser
-	writeGate          chan struct{}
-	cancelOnce         sync.Once
-	cancels            chan int
-	waitDone           chan struct{}
-	processExited      atomic.Bool
-	nextID             int
-	pmu                sync.Mutex
-	pending            map[int]chan json.RawMessage
-	ready              atomic.Bool
-	ended              atomic.Bool
-	stateMu            sync.Mutex
-	configMu           sync.Mutex
-	done               chan struct{}
-	generation         uint64
-	readyCh            chan struct{}
-	capMu              sync.RWMutex
-	staticCapabilities map[string]bool
-	staticOptions      map[string]bool // providerOption of each static provider
-	staticTriggers     []string        // on-type formatting's
-	registrations      map[string]capabilityRegistration
-	syncOptions        synchronizationOptions
-	syncGeneration     uint64
-	watchGeneration    uint64
-	commandMu          sync.Mutex
-	commandCapture     *commandCapture
-	commandUsed        atomic.Bool
-	tokenMu            sync.Mutex
-	feeds              map[string]*queryFeed     // the extension's request tokens (stream.go)
-	fileOpFilters      map[string][]fileOpFilter // workspace.fileOperations: create, rename, delete
+	l                   *lsp
+	lang                string
+	argv                []string
+	cmd                 *exec.Cmd
+	in                  io.WriteCloser
+	out                 io.ReadCloser
+	writeGate           chan struct{}
+	cancelOnce          sync.Once
+	cancels             chan int
+	waitDone            chan struct{}
+	processExited       atomic.Bool
+	nextID              int
+	pmu                 sync.Mutex
+	pending             map[int]chan json.RawMessage
+	ready               atomic.Bool
+	ended               atomic.Bool
+	stateMu             sync.Mutex
+	configMu            sync.Mutex
+	done                chan struct{}
+	generation          uint64
+	readyCh             chan struct{}
+	capMu               sync.RWMutex
+	staticCapabilities  map[string]bool
+	staticOptions       map[string]bool // providerOption of each static provider
+	staticTriggers      []string        // on-type formatting's
+	registrations       map[string]capabilityRegistration
+	syncOptions         synchronizationOptions
+	syncGeneration      uint64
+	watchGeneration     uint64
+	commandMu           sync.Mutex
+	commandCapture      *commandCapture
+	commandUsed         atomic.Bool
+	tokenMu             sync.Mutex
+	feeds               map[string]*queryFeed     // the extension's request tokens (stream.go)
+	fileOpFilters       map[string][]fileOpFilter // workspace.fileOperations: create, rename, delete
+	staticFolderChanges bool                      // workspace.workspaceFolders.changeNotifications
+	folderMu            sync.Mutex
+	folders             []workspaceFolder // the folders it knows (folders.go)
+	foldersSent         bool
 }
 
 type location struct {
@@ -319,11 +328,11 @@ func (s *server) start() {
 	s.l.mu.Lock()
 	options := s.l.settings.forLanguage(s.lang).InitializationOptions
 	folders := s.l.workspaceFolders()
-	var root any
-	if s.l.project != "" && s.l.project != "-" {
-		root = fileURI(s.l.project)
-	}
+	initial, known, root := s.l.initializeFolders()
 	s.l.mu.Unlock()
+	s.folderMu.Lock()
+	s.folders, s.foldersSent = initial, known
+	s.folderMu.Unlock()
 	initializeParams := map[string]any{
 		"processId": os.Getpid(), "rootUri": root,
 		"workspaceFolders":      folders,
@@ -350,6 +359,7 @@ func (s *server) start() {
 	}
 	s.status(s.name(), false)
 	s.l.scopeChanged()
+	s.syncFolders() // folders that changed while it started
 }
 
 func (s *server) waitReady() { <-s.readyCh }
@@ -739,7 +749,9 @@ func main() {
 		// commands invoked with a body: a code action's server command is a command reference
 		rhunext.FeatureCommandArgs,
 		// workspace edits as transactions, file operations, showDocument, linked editing
-		rhunext.FeatureWorkspaceEdits, rhunext.FeatureFileOperations, rhunext.FeatureReveal, rhunext.FeatureLinkedEditing}
+		rhunext.FeatureWorkspaceEdits, rhunext.FeatureFileOperations, rhunext.FeatureReveal, rhunext.FeatureLinkedEditing,
+		// the window's folders: the servers' workspace folders
+		rhunext.FeatureWorkspaceFolders}
 	l := &lsp{}
 	err := rhunext.RunWith(features, l)
 	l.shutdown()

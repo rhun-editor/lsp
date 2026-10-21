@@ -102,6 +102,15 @@ becomes the characters rhun lets you type in the ranges, another keeps rhun's de
 `window/showDocument` opens the file in rhun with the selection and reveals it; external
 documents and other schemes are refused, and rhun always activates the tab it opens.
 
+## Workspace folders
+
+With rhun's workspace folders (a window with several folders), every folder is a workspace folder
+of the servers: `initialize` names them all (`rootUri` the primary one), `workspace/workspaceFolders`
+answers them and `workspace/configuration` may name resources in any of them. As the extension
+reads the project, rhun restarts it when the folders change, and the servers start again with the
+new set; a server that is told of changes while it runs (`changeNotifications`, or a registration)
+gets `workspace/didChangeWorkspaceFolders`.
+
 ## Source actions before saving
 
 Enable source kinds in rhun's Settings, such as `source.organizeImports source.fixAll`, to run
@@ -217,7 +226,8 @@ hover, go to definition, configuration callbacks, reloads, progress and cancella
 `tests/lang.txt` and `tests/lang11.txt` the language features, including the provider scope,
 references with a partial result, declaration, implementation, prepare-rename, Auto Fix, Format
 Selection, formatting as you type, the call hierarchy and the Problems store; `tests/linked.txt`
-linked editing in an HTML document. The Go tests drive
+linked editing in an HTML document; `tests/folders.txt` two workspace folders and a third added.
+The Go tests drive
 each protocol 1.1 mapping through the real SDK against an in-process fake rhun and fake server
 (`harness_test.go`). Releases are built by the reusable workflow from
 `rhun-editor/extension-template`.

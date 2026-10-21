@@ -1,0 +1,36 @@
+# rhun PROJECT LIB --headless --extensions DIR --script tests/folders.txt (tests/run.sh sets it
+# up): two workspace folders from the command line are the server's workspaceFolders at
+# initialize (the hover on FOLDERS says what the fake server knows); a third folder added restarts
+# the extension, which reads the project, and its server starts with all three
+wait 100
+open proj/folders.go
+wait-ext lsp running
+wait 800
+print-folders
+key ctrl+Home
+key Down
+key Down
+key Right
+key Right
+key Right
+key Right
+cmd show_hover
+wait 800
+print-hover-card
+key Escape
+folder-add WORKDIR/docs
+wait 1500
+print-folders
+open proj/folders.go
+wait-ext lsp running
+wait 1000
+key ctrl+Home
+key Down
+key Down
+key Right
+key Right
+key Right
+key Right
+cmd show_hover
+wait 800
+print-hover-card

@@ -176,8 +176,8 @@ func configurationSection(settings map[string]any, section string) any {
 	return value
 }
 
-// Called with l.mu held. The bridge currently has one project folder; open documents outside
-// it still have their own known resource scope. Unknown resources never gain a project scope.
+// Called with l.mu held. A resource is in scope when it is in a workspace folder (the project
+// folder without workspace-folders) or an open document. Unknown resources never gain a scope.
 func (l *lsp) configurationScope(scope string) bool {
 	if scope == "" {
 		return true
@@ -193,14 +193,34 @@ func (l *lsp) configurationScope(scope string) bool {
 	if l.byPath[path] != nil {
 		return true
 	}
-	if l.project == "" {
-		return false
+	roots := []string{l.project}
+	if l.foldersKnown {
+		roots = roots[:0]
+		for _, f := range l.folders {
+			roots = append(roots, f.path)
+		}
 	}
-	relative, err := filepath.Rel(l.project, path)
-	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
+	for _, root := range roots {
+		if root == "" || root == "-" {
+			continue
+		}
+		relative, err := filepath.Rel(root, path)
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative) {
+			return true
+		}
+	}
+	return false
 }
 
+// workspaceFolders are LSP's workspaceFolders: rhun's folders (feature workspace-folders), else the
+// project folder; null without any. Called with l.mu held.
 func (l *lsp) workspaceFolders() any {
+	if l.foldersKnown {
+		if len(l.folders) == 0 {
+			return nil
+		}
+		return lspFolders(l.folders)
+	}
 	if l.project == "" || l.project == "-" {
 		return nil
 	}

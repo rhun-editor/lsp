@@ -13,7 +13,8 @@
 // answers the word's range and placeholder (null on a keyword), declaration is the word's first
 // occurrence and the implementations are the func lines (as LocationLinks), the call hierarchy
 // of a func is its callers and callees in the same file; ERR diagnostics carry a code, a link and
-// (after the first) the first one as related information;
+// (after the first) the first one as related information; a hover on FOLDERS tells the workspace
+// folders initialize named and the changes didChangeWorkspaceFolders brought;
 // linked editing ranges are the occurrences of the word under the cursor in an .html document
 // when there are two of them (a tag's name and its closing tag's).
 package main
@@ -40,6 +41,14 @@ type rng struct {
 }
 
 var docs = map[string][]rune{} // uri -> text as runes (positions are UTF-16 units; the test texts are BMP)
+
+// the workspace folders: their names at initialize, the root's last element, and the changes
+// didChangeWorkspaceFolders brought ("+name", "-name"); a hover on FOLDERS says them
+var (
+	initFolders   []string
+	initRoot      string
+	folderChanges []string
+)
 
 func main() {
 	br := bufio.NewReader(os.Stdin)
@@ -70,7 +79,20 @@ func main() {
 		json.Unmarshal(body, &msg)
 		switch msg.Method {
 		case "initialize":
+			var p struct {
+				RootURI string `json:"rootUri"`
+				Folders []struct {
+					URI  string `json:"uri"`
+					Name string `json:"name"`
+				} `json:"workspaceFolders"`
+			}
+			json.Unmarshal(msg.Params, &p)
+			for _, f := range p.Folders {
+				initFolders = append(initFolders, f.Name)
+			}
+			initRoot = p.RootURI[strings.LastIndex(p.RootURI, "/")+1:]
 			reply(msg.ID, map[string]any{"capabilities": map[string]any{"textDocumentSync": 2, "hoverProvider": true, "definitionProvider": true,
+				"workspace":          map[string]any{"workspaceFolders": map[string]any{"supported": true, "changeNotifications": true}},
 				"referencesProvider": true, "documentSymbolProvider": true, "codeActionProvider": true,
 				"renameProvider": map[string]any{"prepareProvider": true}, "declarationProvider": true, "implementationProvider": true,
 				"documentFormattingProvider": true, "documentRangeFormattingProvider": true, "linkedEditingRangeProvider": true,
@@ -125,10 +147,34 @@ func main() {
 			}
 			json.Unmarshal(msg.Params, &p)
 			w := wordAt(docs[p.TextDocument.URI], p.Position)
-			if w == "" {
+			switch {
+			case w == "":
 				reply(msg.ID, nil)
-			} else {
+			case w == "FOLDERS":
+				// what the server knows of the workspace folders
+				changed := strings.Join(folderChanges, " ")
+				if changed == "" {
+					changed = "none"
+				}
+				reply(msg.ID, map[string]any{"contents": map[string]any{"kind": "plaintext",
+					"value": "folders: " + strings.Join(initFolders, " ") + "; root: " + initRoot + "; changed: " + changed}})
+			default:
 				reply(msg.ID, map[string]any{"contents": map[string]any{"kind": "markdown", "value": "```go\nfake: " + w + "\n```"}})
+			}
+		case "workspace/didChangeWorkspaceFolders":
+			var p struct {
+				Event struct {
+					Added, Removed []struct {
+						Name string `json:"name"`
+					}
+				} `json:"event"`
+			}
+			json.Unmarshal(msg.Params, &p)
+			for _, f := range p.Event.Added {
+				folderChanges = append(folderChanges, "+"+f.Name)
+			}
+			for _, f := range p.Event.Removed {
+				folderChanges = append(folderChanges, "-"+f.Name)
 			}
 		case "textDocument/completion":
 			var p struct {

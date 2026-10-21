@@ -264,6 +264,7 @@ func (s *server) loadCapabilities(raw json.RawMessage) error {
 	s.staticTriggers = triggers
 	s.capMu.Unlock()
 	s.loadFileOpCapabilities(caps)
+	s.loadFolderCapabilities(caps)
 	return nil
 }
 
@@ -345,7 +346,7 @@ func (s *server) registerCapabilities(params json.RawMessage) (any, int, string)
 			return nil, -32602, "invalid registration ID"
 		}
 		method, err := jsonString(item["method"])
-		if _, known := capabilityFields[method]; err != nil || (!known && !isSynchronizationMethod(method) && method != watchedFilesMethod && !isFileOpMethod(method)) {
+		if _, known := capabilityFields[method]; err != nil || (!known && !isSynchronizationMethod(method) && method != watchedFilesMethod && !isFileOpMethod(method) && method != didChangeFoldersMethod) {
 			return nil, -32602, "unsupported registration method"
 		}
 		if _, duplicate := batch[id]; duplicate {

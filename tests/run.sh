@@ -82,6 +82,15 @@ run tests/linked.txt > "$work/out.txt"
 check linked
 rm "$state/lsp.ini"
 
+# workspace folders: two from the command line, a third added
+mkdir -p "$work/lib" "$work/docs"
+printf 'package main\n\n// FOLDERS\n' > "$work/proj/folders.go"
+sed -e "s|proj/|$work/proj/|" -e "s|WORKDIR/|$work/|" tests/folders.txt > "$work/script.txt"
+PATH="$work/bin:$PATH" HOME=$work XDG_CONFIG_HOME=$work/config XDG_STATE_HOME=$work/state \
+    "$RHUN" "$work/proj" "$work/lib" --headless 1000x600 --scale 1 --extensions "$work/exts" --script "$work/script.txt" 2>&1 |
+    sed -e 's/pid=[1-9][0-9]*/pid=PID/' -e "s|/private$work|WORK|g" -e "s|$work|WORK|g" > "$work/out.txt"
+check folders
+
 python3 tests/callbacks.py "$RHUN"
 
 python3 tests/source-actions.py "$RHUN"
