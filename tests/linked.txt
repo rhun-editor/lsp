@@ -1,0 +1,19 @@
+# rhun PROJECT --headless --extensions DIR --script tests/linked.txt (tests/run.sh sets it up):
+# linked editing (rhun 0.18): the fake server is HTML's too; typing in the opening tag's name
+# changes the closing tag's, and one Undo takes both back
+wait 100
+open proj/a.html
+wait-ext lsp running
+wait 800
+key ctrl+Home
+key Right
+key Right
+print-state
+wait 600
+type ix
+wait 300
+print-doc
+key Escape
+key ctrl+z
+wait 200
+print-doc

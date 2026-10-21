@@ -54,8 +54,9 @@ func (l *lsp) textOf(path string) ([]byte, int64, error) {
 	if text != nil {
 		return text, version, nil
 	}
+	// rhun's text of a file: CR before LF dropped
 	data, err := os.ReadFile(path)
-	return data, rhunext.OnDisk, err
+	return bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")), rhunext.OnDisk, err
 }
 
 func rhunRange(text []byte, r lspRange) rhunext.Range {
@@ -286,6 +287,11 @@ type actionData struct {
 	Targets    []actionTarget `json:"targets,omitempty"`
 	Doc        rhunext.Doc    `json:"doc,omitempty"`
 	Version    int64          `json:"version"`
+	FileOps    []fileOp       `json:"fileOps,omitempty"` // the action's edit made them
+	// protocol 1.1 (kept in memory, never sent): an edit with file operations that goes with the
+	// resolve answer, and the command reference that follows it
+	Edit *rhunext.WorkspaceEdit `json:"-"`
+	Ref  *rhunext.CommandRef    `json:"-"`
 }
 
 func (l *lsp) Actions(ext *rhunext.Ext, req rhunext.ActionsRequest) []rhunext.CodeAction {
@@ -344,13 +350,15 @@ func (l *lsp) Actions(ext *rhunext.Ext, req rhunext.ActionsRequest) []rhunext.Co
 				cmd = &c
 			}
 		}
+		var fileOps []fileOp
 		if len(a.Edit) > 0 && string(a.Edit) != "null" {
-			edit, err := l.commandWorkspaceEdit(a.Edit, s, queries...)
+			conv, err := l.commandWorkspaceEditFull(a.Edit, s, a.Title, queries...)
 			if err != nil {
 				ext.Logf("action %q: %v", a.Title, err)
 				continue
 			}
-			act.Edit = &edit
+			edit := conv.edit
+			act.Edit, fileOps = &edit, conv.ops
 		}
 		if cmd != nil {
 			data := actionData{Lang: d.lang, Generation: s.generation, Command: *cmd}
@@ -364,6 +372,10 @@ func (l *lsp) Actions(ext *rhunext.Ext, req rhunext.ActionsRequest) []rhunext.Co
 				act.Edit = nil
 			}
 			act.Data, _ = json.Marshal(data)
+		}
+		if act.Data == nil && len(fileOps) > 0 {
+			// the action event says the edit was made: the servers hear of its file operations
+			act.Data, _ = json.Marshal(actionData{Lang: d.lang, Generation: s.generation, FileOps: fileOps})
 		}
 		if act.Edit == nil && act.Data == nil {
 			continue
@@ -405,7 +417,14 @@ func actionKind(a lspAction) rhunext.ActionKind {
 // Action runs a chosen action's server command; its edits come back as workspace/applyEdit
 func (l *lsp) Action(ext *rhunext.Ext, data []byte) {
 	var a actionData
-	if json.Unmarshal(data, &a) != nil || (a.Command.Command == "" && a.Resolve == nil && a.Prepared == nil) {
+	if json.Unmarshal(data, &a) != nil {
+		return
+	}
+	if len(a.FileOps) > 0 && a.Command.Command == "" && a.Resolve == nil && a.Prepared == nil {
+		go l.notifyFileOps(a.FileOps)
+		return
+	}
+	if a.Command.Command == "" && a.Resolve == nil && a.Prepared == nil {
 		return
 	}
 	go l.runExplicitCommand(a)
@@ -506,6 +525,15 @@ func (l *lsp) Rename(ext *rhunext.Ext, req rhunext.RenameRequest) (rhunext.Works
 	}
 	if len(res) == 0 || string(res) == "null" {
 		return rhunext.WorkspaceEdit{}, errors.New("nothing to rename here")
+	}
+	if caps := l.editCaps(); caps.ws {
+		// a transaction: files that are not open edited on disk, files renamed (a module's)
+		conv, err := l.convertEdit(res, convertOptions{caps: caps, queries: []*documentQuery{d}, server: s, label: "Rename to " + req.Name})
+		if err != nil {
+			return rhunext.WorkspaceEdit{}, err
+		}
+		l.expectFileOps(conv.ops)
+		return conv.edit, nil
 	}
 	return l.workspaceEdit(res, d)
 }

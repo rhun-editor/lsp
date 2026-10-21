@@ -10,6 +10,7 @@ print-marks
 move X Y
 wait 800
 print-hover
+print-hover-card
 key ctrl+Home
 key Down
 key Down

@@ -119,7 +119,8 @@ type lsp struct {
 	diagRunning                    bool
 	pullMu                         sync.Mutex
 	pulls                          map[*document]*pullState
-	execReady                      atomic.Bool // the exec command is registered (codeactions.go)
+	execReady                      atomic.Bool    // the exec command is registered (codeactions.go)
+	pending                        pendingFileOps // file operations of edits answered to rhun
 }
 
 func (l *lsp) Ready(ext *rhunext.Ext, project string) {
@@ -150,6 +151,7 @@ func (l *lsp) Ready(ext *rhunext.Ext, project string) {
 func (l *lsp) Event(ext *rhunext.Ext, ev rhunext.Event) {
 	l.workspaceWatchEvent(ev)
 	l.documentEvent(ev)
+	l.fileOpEvent(ev)
 }
 
 func (l *lsp) Run(ext *rhunext.Ext, command string, doc rhunext.Doc) {
@@ -275,7 +277,8 @@ type server struct {
 	commandCapture     *commandCapture
 	commandUsed        atomic.Bool
 	tokenMu            sync.Mutex
-	feeds              map[string]*queryFeed // the extension's request tokens (stream.go)
+	feeds              map[string]*queryFeed     // the extension's request tokens (stream.go)
+	fileOpFilters      map[string][]fileOpFilter // workspace.fileOperations: create, rename, delete
 }
 
 type location struct {
@@ -402,6 +405,8 @@ func (s *server) read(br *bufio.Reader) {
 			}
 		case msg.Method == "textDocument/publishDiagnostics":
 			s.publish(msg.Params)
+		case msg.Method == "window/showDocument" && len(msg.ID) > 0:
+			go s.showDocument(msg.ID, msg.Params)
 		case msg.Method == "workspace/applyEdit" && len(msg.ID) > 0:
 			if capture := s.admitCommandEdit(); capture != nil {
 				go s.applyCommandEdit(capture, msg.ID, msg.Params)
@@ -670,7 +675,13 @@ func (l *lsp) clientCapabilities(watch bool) map[string]any {
 		text["diagnostic"] = map[string]any{"relatedDocumentSupport": false}
 	}
 	workspace := map[string]any{"configuration": true, "workspaceFolders": true, "applyEdit": true, "executeCommand": map[string]any{},
-		"workspaceEdit": map[string]any{"documentChanges": true, "resourceOperations": []string{}}}
+		"workspaceEdit": workspaceEditCapabilities(l.editCaps())}
+	if l.editCaps().ops {
+		workspace["fileOperations"] = map[string]any{"dynamicRegistration": true, "didCreate": true, "didRename": true, "didDelete": true}
+	}
+	if l.has(rhunext.FeatureLinkedEditing) {
+		text["linkedEditingRange"] = map[string]any{}
+	}
 	if l.has(rhunext.FeatureWorkspaceSymbols) {
 		kinds := make([]int, len(symbolKinds))
 		for i := range kinds {
@@ -686,7 +697,7 @@ func (l *lsp) clientCapabilities(watch bool) map[string]any {
 		workspace["didChangeWatchedFiles"] = map[string]any{"dynamicRegistration": true, "relativePatternSupport": true}
 	}
 	caps := map[string]any{"textDocument": text, "workspace": workspace,
-		"window":  map[string]any{"workDoneProgress": true},
+		"window":  map[string]any{"workDoneProgress": true, "showDocument": map[string]any{"support": true}},
 		"general": map[string]any{"positionEncodings": []string{"utf-16"}}}
 	text["synchronization"].(map[string]any)["dynamicRegistration"] = true
 	for _, info := range capabilityFields {
@@ -726,7 +737,9 @@ func main() {
 		rhunext.FeatureHoverQuery, rhunext.FeatureSelectionRanges, rhunext.FeatureHierarchy, rhunext.FeatureWorkspaceSymbols,
 		rhunext.FeatureDocumentLinks, rhunext.FeatureFileDiagnostics, featureMarkdown,
 		// commands invoked with a body: a code action's server command is a command reference
-		rhunext.FeatureCommandArgs}
+		rhunext.FeatureCommandArgs,
+		// workspace edits as transactions, file operations, showDocument, linked editing
+		rhunext.FeatureWorkspaceEdits, rhunext.FeatureFileOperations, rhunext.FeatureReveal, rhunext.FeatureLinkedEditing}
 	l := &lsp{}
 	err := rhunext.RunWith(features, l)
 	l.shutdown()

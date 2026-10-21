@@ -13,7 +13,9 @@
 // answers the word's range and placeholder (null on a keyword), declaration is the word's first
 // occurrence and the implementations are the func lines (as LocationLinks), the call hierarchy
 // of a func is its callers and callees in the same file; ERR diagnostics carry a code, a link and
-// (after the first) the first one as related information.
+// (after the first) the first one as related information;
+// linked editing ranges are the occurrences of the word under the cursor in an .html document
+// when there are two of them (a tag's name and its closing tag's).
 package main
 
 import (
@@ -71,7 +73,7 @@ func main() {
 			reply(msg.ID, map[string]any{"capabilities": map[string]any{"textDocumentSync": 2, "hoverProvider": true, "definitionProvider": true,
 				"referencesProvider": true, "documentSymbolProvider": true, "codeActionProvider": true,
 				"renameProvider": map[string]any{"prepareProvider": true}, "declarationProvider": true, "implementationProvider": true,
-				"documentFormattingProvider": true, "documentRangeFormattingProvider": true,
+				"documentFormattingProvider": true, "documentRangeFormattingProvider": true, "linkedEditingRangeProvider": true,
 				"documentOnTypeFormattingProvider": map[string]any{"firstTriggerCharacter": "\n", "moreTriggerCharacter": []string{"}", "@"}},
 				"executeCommandProvider":           map[string]any{"commands": []string{"fake.comment"}}, "callHierarchyProvider": true,
 				"completionProvider": map[string]any{"triggerCharacters": []string{"."}}, "signatureHelpProvider": map[string]any{"triggerCharacters": []string{"(", ","}}}})
@@ -348,6 +350,21 @@ func main() {
 				}
 			}
 			reply(msg.ID, calls)
+		case "textDocument/linkedEditingRange":
+			var p struct {
+				TextDocument struct {
+					URI string `json:"uri"`
+				} `json:"textDocument"`
+				Position position `json:"position"`
+			}
+			json.Unmarshal(msg.Params, &p)
+			w := wordAt(docs[p.TextDocument.URI], p.Position)
+			found := occurrences(docs[p.TextDocument.URI], w)
+			if w == "" || !strings.HasSuffix(p.TextDocument.URI, ".html") || len(found) != 2 {
+				reply(msg.ID, nil)
+				break
+			}
+			reply(msg.ID, map[string]any{"ranges": found, "wordPattern": "[-_\\w.:]+"})
 		case "textDocument/documentSymbol":
 			var p struct {
 				TextDocument struct {

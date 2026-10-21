@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -587,5 +588,39 @@ func TestCodeActionCommandsAsReferences(t *testing.T) {
 	h.host.write("0 run lsp.cancel_progress 1 palette 0\n")
 	if got := <-toasts; got != "No cancellable language server work" {
 		t.Fatal(got)
+	}
+}
+
+func TestCodeActionWithFileOperationsGoesWithItsResolution(t *testing.T) {
+	created := filepath.Join(t.TempDir(), "new.go")
+	features := append(allFeatures, rhunext.FeatureWorkspaceEdits, rhunext.FeatureFileOperations)
+	h := newHarness(t, features, `{"codeActionProvider":true}`, sample, func(f *fakeLSP, method string, id, params json.RawMessage) (any, bool) {
+		return []any{
+			map[string]any{"title": "Make a file", "kind": "refactor.move", "edit": map[string]any{"documentChanges": []any{
+				map[string]any{"kind": "create", "uri": fileURI(created)}}}},
+			map[string]any{"title": "Blank it", "kind": "quickfix", "edit": map[string]any{"changes": map[string]any{uri: []any{
+				map[string]any{"range": rng(2, 11, 2, 16), "newText": "_"}}}}},
+		}, true
+	})
+	acts := parseActions(t, h.host.ask("code-actions 1 1 3 13 3 18 invoked - -", nil).body)
+	if len(acts) != 2 || acts[0].edit != "" || acts[1].edit == "" {
+		t.Fatalf("%+v", acts)
+	}
+	data, ok := extraRecord(acts[0].extra, "resolve")
+	if !ok {
+		t.Fatal(acts[0])
+	}
+	h.l.pending.mu.Lock()
+	before := len(h.l.pending.items)
+	h.l.pending.mu.Unlock()
+	r := h.host.ask("code-action-resolve 1 1 "+itoa(len(data)), []byte(data))
+	if !r.ok || !strings.Contains(string(r.body), created) {
+		t.Fatalf("%q", r.body)
+	}
+	h.l.pending.mu.Lock()
+	after := len(h.l.pending.items)
+	h.l.pending.mu.Unlock()
+	if after != before+1 {
+		t.Fatal("the servers would not hear of the created file")
 	}
 }

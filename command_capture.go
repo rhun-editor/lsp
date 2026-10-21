@@ -7,7 +7,6 @@ import (
 	"errors"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"sync"
 	"time"
 
@@ -145,8 +144,10 @@ func (s *server) applyCommandEdit(work *commandEdit, id json.RawMessage, params 
 	defer func() { close(work.done); s.commandMu.Lock(); c.pending--; s.commandMu.Unlock(); c.work.Done() }()
 	<-work.before
 	var p struct {
-		Edit json.RawMessage `json:"edit"`
+		Label string          `json:"label"`
+		Edit  json.RawMessage `json:"edit"`
 	}
+	var origins []int
 	err := json.Unmarshal(params, &p)
 	if err == nil {
 		err = c.ctx.Err()
@@ -162,16 +163,23 @@ func (s *server) applyCommandEdit(work *commandEdit, id json.RawMessage, params 
 				err = c.save.apply(edit)
 			}
 		} else {
-			var edit rhunext.WorkspaceEdit
-			edit, err = s.l.commandWorkspaceEdit(p.Edit, s, c.queries...)
+			var conv convertedEdit
+			conv, err = s.l.commandWorkspaceEditFull(p.Edit, s, p.Label, c.queries...)
+			origins = conv.origins
 			if err == nil {
-				c.queries, err = s.l.applyExplicitEdit(c.ctx, edit, c.queries, s)
+				c.queries, err = s.l.applyExplicitEdit(c.ctx, conv.edit, c.queries, s)
+			}
+			if err == nil {
+				s.l.notifyFileOps(conv.ops)
 			}
 		}
 	}
 	result := map[string]any{"applied": err == nil}
 	if err != nil {
 		result["failureReason"] = err.Error()
+		if n := failedChange(err, origins); n >= 0 {
+			result["failedChange"] = n
+		}
 		if c.failure == nil {
 			c.failure = err
 		}
@@ -252,7 +260,8 @@ func (l *lsp) runExplicitCommand(a actionData) {
 			return
 		}
 		if actionHasEdit(resolved) {
-			edit, err := l.commandWorkspaceEdit(resolved.Edit, s, queries...)
+			conv, err := l.commandWorkspaceEditFull(resolved.Edit, s, resolved.Title, queries...)
+			edit := conv.edit
 			if err == nil {
 				// Even an action editing only another file remains conditional on its origin.
 				found := false
@@ -271,6 +280,7 @@ func (l *lsp) runExplicitCommand(a actionData) {
 				l.ext.Toast(resolved.Title + ": " + err.Error())
 				return
 			}
+			l.notifyFileOps(conv.ops)
 		}
 		cmd, err := sourceCommand(resolved)
 		if err != nil {
@@ -306,6 +316,9 @@ func commandEditSnapshots(edit rhunext.WorkspaceEdit, queries []*documentQuery) 
 				index = i
 				break
 			}
+		}
+		if index < 0 && file.Version < 0 && file.Target.Path != "" {
+			continue // a file that is not open: edited on disk (workspace-edits), no snapshot
 		}
 		if index < 0 || queries[index].text == nil || queries[index].version != file.Version {
 			return nil, errors.New("command target snapshot unavailable")
@@ -357,15 +370,18 @@ func (l *lsp) applyExplicitEdit(ctx context.Context, edit rhunext.WorkspaceEdit,
 	if err != nil {
 		return nil, err
 	}
-	body, err := edit.Encode()
-	if err != nil {
-		return nil, err
-	}
-	if _, err = l.ext.RequestContext(ctx, "apply", body, strconv.Itoa(len(body))); err != nil {
+	// encoded for what rhun agreed (a hash goes as "-" without workspace-edits); a refusal names
+	// the entry at fault (*rhunext.ApplyError) with workspace-edits
+	if err = l.ext.ApplyContext(ctx, edit); err != nil {
 		return nil, err
 	}
 	next := append([]*documentQuery(nil), queries...)
 	for i, q := range expected {
+		// a document the edit renamed or deleted is closed (a renamed one reopens under a new id)
+		if q != nil && movedByOps(q.path, edit.Ops) {
+			next[i] = nil
+			continue
+		}
 		if q == queries[i] {
 			continue
 		}

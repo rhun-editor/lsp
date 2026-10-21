@@ -41,8 +41,15 @@ tabs=1 active=main.go line=5 col=10 sel=0 dirty=1 lang=Go focus=0 theme=rhun-dar
 prompt=New name
 field=main
 toast=bad is not a good name
-toast=Renamed: check the changed files and save them
-tabs=*main.go | other.go
+choose=Language Server: 'Rename to app' changes 1 file that is not open and 1 open file
+field=
+> Apply
+  Apply, and let Language Server change project files from now on
+  Preview changes
+  M  main.go    2 edits
+  M  other.go    1 edit
+toast=Applied 'Rename to app' to 2 files
+tabs=*main.go
 // added by a command
 package app
 

@@ -46,7 +46,8 @@ check basic
 # the language features change the files: a fresh copy of the project
 printf 'package main\n\nfunc other() {}\n' > "$work/proj/other.go"
 printf 'package main\n\n// TODO first\nfunc main() {\n\tERR := 1\n\t_ = ERR\n}\n' > "$work/proj/main.go"
-run tests/lang.txt | sed -e 's/pid=[1-9][0-9]*/pid=PID/' -e "s|$work|WORK|g" > "$work/out.txt"
+# the confirmation list names files by their paths: the scratch folder is WORK
+run tests/lang.txt | sed -e 's/pid=[1-9][0-9]*/pid=PID/' -e "s|/private$work|WORK|g" -e "s|$work|WORK|g" > "$work/out.txt"
 check lang
 
 # protocol 1.1: every server but the fake turned off, so the scope does not depend on what this
@@ -60,7 +61,7 @@ done
 cp "$work/config/rhun/config" "$work/config.saved"
 printf '\n[editor]\nformat_on_type = yes\n' >> "$work/config/rhun/config"
 printf 'package main\n\nfunc leaf() {}\n\nfunc caller() {\n\tleaf()\n\tleaf()\n}\n' > "$work/proj/calls.go"
-run tests/lang11.txt | sed -e 's/pid=[1-9][0-9]*/pid=PID/' -e "s|$work|WORK|g" > "$work/out.txt"
+run tests/lang11.txt | sed -e 's/pid=[1-9][0-9]*/pid=PID/' -e "s|/private$work|WORK|g" -e "s|$work|WORK|g" > "$work/out.txt"
 check lang11
 cp "$work/config.saved" "$work/config/rhun/config"
 rm "$state/lsp.ini"
@@ -73,6 +74,13 @@ printf 'package main\n\nfunc f() {\n\tx := 1\n\t_ = x\n}\n' > "$work/saved.expec
 if ! cmp -s "$work/proj/fmt.go" "$work/saved.expected"; then
     echo "FAIL saved formatting"; exit 1
 fi
+
+# linked editing: HTML's server is the fake one too
+printf '<div>\n  <p>hi</p>\n</div>\n' > "$work/proj/a.html"
+printf '[servers]\nHTML = gopls\n' > "$state/lsp.ini"
+run tests/linked.txt > "$work/out.txt"
+check linked
+rm "$state/lsp.ini"
 
 python3 tests/callbacks.py "$RHUN"
 

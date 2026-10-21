@@ -1,0 +1,12 @@
+ext=lsp state=running
+tabs=1 active=a.html line=1 col=3 sel=0 dirty=0 lang=HTML focus=0 theme=rhun-dark
+<dixiv>
+  <p>hi</p>
+</dixiv>
+
+<eod>
+<div>
+  <p>hi</p>
+</div>
+
+<eod>

@@ -43,6 +43,7 @@ var capabilityFields = map[string]capabilityInfo{
 	"textDocument/onTypeFormatting":     {"documentOnTypeFormattingProvider", "textDocument.onTypeFormatting", true},
 	"textDocument/documentLink":         {"documentLinkProvider", "textDocument.documentLink", true},
 	"textDocument/diagnostic":           {"diagnosticProvider", "textDocument.diagnostic", true},
+	"textDocument/linkedEditingRange":   {"linkedEditingRangeProvider", "textDocument.linkedEditingRange", false},
 }
 
 // providerOption is the option of a provider that enables the requests that depend on it
@@ -89,6 +90,7 @@ type capabilityRegistration struct {
 	syncKind    int
 	includeText bool
 	watchers    []watchedFileRule
+	fileFilters []fileOpFilter // workspace/did{Create,Rename,Delete}Files
 }
 
 func jsonObject(raw json.RawMessage) (map[string]json.RawMessage, error) {
@@ -261,6 +263,7 @@ func (s *server) loadCapabilities(raw json.RawMessage) error {
 	s.staticOptions = options
 	s.staticTriggers = triggers
 	s.capMu.Unlock()
+	s.loadFileOpCapabilities(caps)
 	return nil
 }
 
@@ -342,7 +345,7 @@ func (s *server) registerCapabilities(params json.RawMessage) (any, int, string)
 			return nil, -32602, "invalid registration ID"
 		}
 		method, err := jsonString(item["method"])
-		if _, known := capabilityFields[method]; err != nil || (!known && !isSynchronizationMethod(method) && method != watchedFilesMethod) {
+		if _, known := capabilityFields[method]; err != nil || (!known && !isSynchronizationMethod(method) && method != watchedFilesMethod && !isFileOpMethod(method)) {
 			return nil, -32602, "unsupported registration method"
 		}
 		if _, duplicate := batch[id]; duplicate {
@@ -378,6 +381,12 @@ func (s *server) registerCapabilities(params json.RawMessage) (any, int, string)
 					return nil, -32602, err.Error()
 				}
 			}
+			if isFileOpMethod(method) {
+				registration.fileFilters, err = parseFileOpFilters(item["registerOptions"])
+				if err != nil {
+					return nil, -32602, err.Error()
+				}
+			}
 			if option := providerOption[method]; option != "" {
 				if raw, exists := options[option]; exists {
 					if string(raw) != "true" && string(raw) != "false" {
@@ -390,7 +399,7 @@ func (s *server) registerCapabilities(params json.RawMessage) (any, int, string)
 				registration.triggers = typeTriggers(options)
 			}
 		}
-		if (method == "textDocument/didChange" || method == watchedFilesMethod) && (len(options) == 0 || string(options) == "null") {
+		if (method == "textDocument/didChange" || method == watchedFilesMethod || isFileOpMethod(method)) && (len(options) == 0 || string(options) == "null") {
 			return nil, -32602, "registration options required"
 		}
 		registration.selector, registration.resolve, registration.cost = selector, resolve, len(id)+len(method)+len(options)

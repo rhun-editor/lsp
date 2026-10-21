@@ -8,10 +8,12 @@ Implementation** (ctrl+F12), **Find All References** (shift+F12, in the Results 
 server finds them), call and type hierarchies (shift+alt+h), **Go to Symbol in File** (ctrl+r)
 and **in Project** (ctrl+t), **code actions** (ctrl+.: the server's quick fixes, refactorings and
 source actions; Auto Fix shift+alt+., Organize Imports shift+alt+o), **Rename Symbol** (F2: the
-server says what can be renamed; every file it changes opens unsaved for you to review),
-**Format Document** (shift+alt+f), Format Selection, formatting as you type (with rhun's
-`[editor] format_on_type = yes`), Expand and Shrink Selection (shift+alt+Right / Left) and links
-under ctrl+hover. One server per
+server says what can be renamed; with rhun 0.18 one change across files, files that are not open
+changed on disk after you confirm, undone with one Undo; earlier rhun opens every changed file
+unsaved for you to review), **linked editing** (an HTML tag's name and its closing tag's change
+together), **Format Document** (shift+alt+f), Format Selection, formatting as you type (with
+rhun's `[editor] format_on_type = yes`), Expand and Shrink Selection (shift+alt+Right / Left) and
+links under ctrl+hover. One server per
 language per project, started when the first document of the language opens, run from the
 project folder. Nothing is downloaded: the extension runs the server you already have on your
 `PATH`:
@@ -72,6 +74,33 @@ back as one apply request each (rhun builds without `command-args` get the comma
 extension when the action is chosen). Hover text and documentation are Markdown where rhun
 renders it, else plain text. Servers that offer diagnostics on request are asked for an open
 document's after it changes.
+
+## Workspace edits, file operations, linked editing (rhun 0.18)
+
+Version 0.3.0 requires rhun 0.18 for these and the SDK v1.4.0 (protocol 1.1's features
+`workspace-edits`, `file-operations`, `reveal` and `linked-editing`); with an earlier rhun the
+extension behaves as 0.2. A server's workspace edit (a rename, a code action's edit, the edits
+a server command asks for with `workspace/applyEdit`) goes to rhun as one transaction through
+the SDK's `NormalizeOrdered`: LSP's ordered `documentChanges` mapped onto rhun's phases (an edit
+after a rename names the file before it, repeated edits of a file become one), files that are
+not open converted from the bytes on disk and sent with their `fnv1a64` hash (rhun refuses the
+edit when the file changed since), created, renamed and deleted files (`resourceOperations`
+create, rename, delete; `failureHandling` transactional), the rename's new name or the action's
+title as the label, and a change annotation that needs confirmation asking rhun for its
+confirmation list. As the extension has `project = read`, rhun asks before it writes files that
+are not open. `workspace/applyEdit` is answered with `applied`, `failureReason` and
+`failedChange` (the `documentChanges` index rhun or the conversion refused). After an edit that
+created, renamed or deleted files is made, servers that asked for them (`fileOperations`
+didCreate, didRename, didDelete, static or registered) get `workspace/didCreateFiles`,
+`didRenameFiles` and `didDeleteFiles`; for a rename answer, which rhun makes without telling
+the extension, once the disk shows it. The `will…` requests are not sent: they are for renames
+the user makes, which rhun does not report to extensions.
+
+Linked editing asks the server's `textDocument/linkedEditingRange` for `[provides] linked`
+files (`*.html *.htm *.xml *.jsx *.tsx *.vue`); a `wordPattern` that is one character class
+becomes the characters rhun lets you type in the ranges, another keeps rhun's default.
+`window/showDocument` opens the file in rhun with the selection and reveals it; external
+documents and other schemes are refused, and rhun always activates the tab it opens.
 
 ## Source actions before saving
 
@@ -176,7 +205,8 @@ connection, with a 500 ms limit for pipes held open by descendant processes.
 ## Needs
 
 Documents: write (completion, code actions, rename and formatting can edit documents). Project:
-read (the server reads the project). Run: the servers above, by name; no network.
+read (the server reads the project). Run: the servers above, by name, and `go`, which gopls
+runs to load the packages (without it gopls answers "no views"); no network.
 
 ## Build and test
 
@@ -186,7 +216,8 @@ headlessly: diagnostics, marks following an edit, incremental sync agreeing with
 hover, go to definition, configuration callbacks, reloads, progress and cancellation;
 `tests/lang.txt` and `tests/lang11.txt` the language features, including the provider scope,
 references with a partial result, declaration, implementation, prepare-rename, Auto Fix, Format
-Selection, formatting as you type, the call hierarchy and the Problems store. The Go tests drive
+Selection, formatting as you type, the call hierarchy and the Problems store; `tests/linked.txt`
+linked editing in an HTML document. The Go tests drive
 each protocol 1.1 mapping through the real SDK against an in-process fake rhun and fake server
 (`harness_test.go`). Releases are built by the reusable workflow from
 `rhun-editor/extension-template`.

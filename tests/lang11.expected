@@ -10,16 +10,14 @@ actions = *.go
 rename = *.go
 format = *.go
 save_actions = *.go
-hover = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css
+hover = *.go
 declaration = *.go
 implementation = *.go
-selection_ranges = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css
 call_hierarchy = *.go
-workspace_symbols = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css
 range_format = *.go
 type_format = *.go
 type_format.triggers = newline }
-document_links = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css
+linked = *.html *.htm *.xml *.jsx *.tsx *.vue
 problem path=WORK/proj/main.go line=3 col=4 end=3:8 severity=warning code=fake source=rhun-editor/lsp message=TODO here
 problem path=WORK/proj/main.go line=5 col=2 end=5:5 severity=error code=fake(E1) source=rhun-editor/lsp message=ERR here
 problem path=WORK/proj/main.go line=6 col=6 end=6:9 severity=error code=fake(E1) source=rhun-editor/lsp message=ERR here

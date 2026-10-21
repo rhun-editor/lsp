@@ -140,9 +140,25 @@ func (l *lsp) commandQuerySnapshots(s *server, origin *documentQuery) []*documen
 	return queries
 }
 
+// commandWorkspaceEditFull is commandWorkspaceEdit with what a transaction needs: with
+// workspace-edits agreed the edit goes through the SDK's normaliser (file operations, files that
+// are not open hashed on disk, repeated groups of a file composed), named by label, with the
+// documentChanges index behind each entry and its file operations.
+func (l *lsp) commandWorkspaceEditFull(raw json.RawMessage, s *server, label string, queries ...*documentQuery) (convertedEdit, error) {
+	if caps := l.editCaps(); caps.ws {
+		return l.convertEdit(raw, convertOptions{caps: caps, queries: queries, strict: true, server: s, label: label})
+	}
+	edit, err := l.commandWorkspaceEdit(raw, s, queries...)
+	return convertedEdit{edit: edit}, err
+}
+
 // Command edits may touch several files. Each group is converted against its own immutable
 // snapshot. A numeric LSP version is meaningful only for a document synchronized to this server.
 func (l *lsp) commandWorkspaceEdit(raw json.RawMessage, s *server, queries ...*documentQuery) (rhunext.WorkspaceEdit, error) {
+	if caps := l.editCaps(); caps.ws {
+		conv, err := l.convertEdit(raw, convertOptions{caps: caps, queries: queries, strict: true, server: s})
+		return conv.edit, err
+	}
 	var out rhunext.WorkspaceEdit
 	obj, err := jsonObject(raw)
 	if err != nil {

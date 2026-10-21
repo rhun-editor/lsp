@@ -164,27 +164,36 @@ func (l *lsp) CodeActions(ext *rhunext.Ext, req rhunext.CodeActionsRequest) []rh
 			base.Command = *cmd
 			act.Resolve = later(base)
 		case edit:
-			converted, err := l.commandWorkspaceEdit(a.Edit, s, queries...)
+			// with workspace-edits a transaction named by the action's title
+			conv, err := l.commandWorkspaceEditFull(a.Edit, s, a.Title, queries...)
 			if err != nil {
 				ext.Logf("action %q: %v", a.Title, err)
 				continue
 			}
-			if !command {
-				act.Edit = &converted
-				break
-			}
-			if cmd, err := sourceCommand(a); err == nil {
-				// rhun applies the edit and then runs the command
-				if act.Command = l.execRef(s, *cmd); act.Command != nil {
-					act.Edit = &converted
+			converted := conv.edit
+			var ref *rhunext.CommandRef
+			if command {
+				if cmd, err := sourceCommand(a); err == nil {
+					ref = l.execRef(s, *cmd)
+				}
+				if ref == nil {
+					// the extension applies the edit and then runs the command
+					action := a
+					base.Prepared = &action
+					base.Targets = actionTargets(converted, queries)
+					act.Resolve = later(base)
 					break
 				}
 			}
-			// the extension applies the edit and then runs the command
-			action := a
-			base.Prepared = &action
-			base.Targets = actionTargets(converted, queries)
-			act.Resolve = later(base)
+			if len(conv.ops) > 0 {
+				// an edit that creates, renames or deletes files goes with the resolve answer, so
+				// the servers hear of its operations only once it is chosen
+				base.Edit, base.Ref, base.FileOps = &converted, ref, conv.ops
+				act.Resolve = later(base)
+				break
+			}
+			// rhun applies the edit, then runs the command's reference
+			act.Edit, act.Command = &converted, ref
 		case resolves && hasData(a):
 			action := a
 			base.Resolve = &action
@@ -214,6 +223,11 @@ func (l *lsp) ResolveCodeAction(ext *rhunext.Ext, req rhunext.CodeActionResolveR
 		return rhunext.ResolvedAction{}, errors.New("This code action is no longer available")
 	}
 	if a.Resolve == nil {
+		if a.Edit != nil {
+			// an edit with file operations, made by rhun now
+			l.expectFileOps(a.FileOps)
+			return rhunext.ResolvedAction{Edit: a.Edit, Command: a.Ref}, nil
+		}
 		go l.runExplicitCommand(a)
 		return rhunext.ResolvedAction{}, nil
 	}
@@ -249,11 +263,12 @@ func (l *lsp) ResolveCodeAction(ext *rhunext.Ext, req rhunext.CodeActionResolveR
 		}
 	}
 	if actionHasEdit(resolved) {
-		edit, err := l.commandWorkspaceEdit(resolved.Edit, s, l.commandQuerySnapshots(s, d)...)
+		conv, err := l.commandWorkspaceEditFull(resolved.Edit, s, resolved.Title, l.commandQuerySnapshots(s, d)...)
 		if err != nil {
 			return rhunext.ResolvedAction{}, err
 		}
-		out.Edit = &edit
+		out.Edit = &conv.edit
+		l.expectFileOps(conv.ops)
 	}
 	return out, nil
 }

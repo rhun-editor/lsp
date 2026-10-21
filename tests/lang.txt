@@ -1,6 +1,8 @@
 # rhun PROJECT --headless --extensions DIR --script tests/lang.txt (tests/run.sh sets it up):
 # references, symbols, code actions (an edit, and a server command that asks for an edit),
-# rename across an open and a closed file (F2 asks prepare-rename first), a refused rename, format
+# rename across an open and a closed file (F2 asks prepare-rename first; one transaction: the closed
+# file written on disk after the confirmation list, as the extension has project = read), a refused
+# rename, format
 wait 100
 open proj/main.go
 wait-ext lsp running
@@ -60,10 +62,14 @@ wait 300
 type app
 key Return
 wait 800
+print-palette
+key Return
+wait 800
 print-toast
 print-tabs
 print-doc
-key ctrl+Tab
+open proj/other.go
+wait 300
 print-doc
 open proj/fmt.go
 # long enough for the rename toast to go: the one printed below is format's
