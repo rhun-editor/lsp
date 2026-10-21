@@ -207,6 +207,7 @@ func (s *server) loadCapabilities(raw json.RawMessage) error {
 	}
 	s.capMu.Unlock()
 	s.loadFileOpCapabilities(caps)
+	s.registerLegend(caps) // its semantic token legend, for rhun (present.go)
 	return nil
 }
 func (s *server) supports(method string, d selectorDocument) bool {
@@ -218,6 +219,9 @@ func (s *server) supports(method string, d selectorDocument) bool {
 	resolve := method == "codeAction/resolve"
 	if resolve {
 		method = "textDocument/codeAction"
+	}
+	if base, ok := capabilityAliases[method]; ok { // a capability's own requests (present.go)
+		method = base
 	}
 	if s.staticCapabilities[method] && (!resolve || s.staticResolve) {
 		return true

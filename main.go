@@ -345,6 +345,7 @@ func (s *server) start() {
 			"dynamicRegistration": true, "didCreate": true, "didRename": true, "didDelete": true}
 	}
 	textCaps := initializeParams["capabilities"].(map[string]any)["textDocument"].(map[string]any)
+	s.l.presentationCaps(textCaps) // folding, semantic tokens, hints, lens, highlights, colors (present.go)
 	for method := range capabilityFields {
 		name := strings.TrimPrefix(method, "textDocument/")
 		if options, ok := textCaps[name].(map[string]any); ok {
@@ -646,7 +647,9 @@ func argOr(ev rhunext.Event, i int) string {
 func main() {
 	features := []string{rhunext.FeatureComplete, rhunext.FeatureSignature, rhunext.FeatureDefinition,
 		rhunext.FeatureReferences, rhunext.FeatureSymbols, rhunext.FeatureActions, rhunext.FeatureRename, rhunext.FeatureFormat, rhunext.FeatureSaveActions, rhunext.FeatureWorkspaceWatch,
-		rhunext.FeatureWorkspaceEdits, rhunext.FeatureFileOperations, rhunext.FeatureReveal, rhunext.FeatureLinkedEditing}
+		rhunext.FeatureWorkspaceEdits, rhunext.FeatureFileOperations, rhunext.FeatureReveal, rhunext.FeatureLinkedEditing,
+		rhunext.FeatureFoldingRanges, rhunext.FeatureSemanticTokens, rhunext.FeatureInlayHints, rhunext.FeatureCodeLens,
+		rhunext.FeatureHighlights, rhunext.FeatureColors}
 	l := &lsp{}
 	err := rhunext.RunWith(features, l)
 	l.shutdown()

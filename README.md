@@ -76,6 +76,17 @@ becomes the characters rhun lets you type in the ranges, another keeps rhun's de
 `window/showDocument` opens the file in rhun with the selection and reveals it; external
 documents and other schemes are refused, and rhun always activates the tab it opens.
 
+
+## Folding, semantic colors, inlay hints, code lens, highlights and colors
+
+With rhun 0.18 (protocol 1.1) the server's folding ranges replace rhun's indentation ranges, its
+semantic tokens color the code by meaning (the server's legend is registered with rhun; deltas are
+applied here and rhun gets the whole array in byte columns), its inlay hints show inside lines
+(a part with a location is a place to go; the hint's text edits are made by a double click), its
+code lenses show above lines (titles only: their commands are the server's own client commands),
+the places of the symbol under the cursor are marked, and color swatches come from
+`textDocument/documentColor`, a new color written through `textDocument/colorPresentation`.
+
 ## Source actions before saving
 
 Enable source kinds in rhun's Settings, such as `source.organizeImports source.fixAll`, to run
