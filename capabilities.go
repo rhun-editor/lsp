@@ -18,7 +18,7 @@ var capabilityFields = map[string]string{
 	"textDocument/signatureHelp": "signatureHelpProvider", "textDocument/definition": "definitionProvider",
 	"textDocument/references": "referencesProvider", "textDocument/documentSymbol": "documentSymbolProvider",
 	"textDocument/codeAction": "codeActionProvider", "textDocument/rename": "renameProvider",
-	"textDocument/formatting": "documentFormattingProvider",
+	"textDocument/formatting": "documentFormattingProvider", "textDocument/linkedEditingRange": "linkedEditingRangeProvider",
 }
 var errCapabilityUnavailable = errors.New("the language server does not provide this service for this document")
 
@@ -40,6 +40,7 @@ type capabilityRegistration struct {
 	syncKind    int
 	includeText bool
 	watchers    []watchedFileRule
+	fileFilters []fileOpFilter // workspace/did{Create,Rename,Delete}Files
 }
 
 func jsonObject(raw json.RawMessage) (map[string]json.RawMessage, error) {
@@ -205,6 +206,7 @@ func (s *server) loadCapabilities(raw json.RawMessage) error {
 		s.staticResolve = string(options["resolveProvider"]) == "true"
 	}
 	s.capMu.Unlock()
+	s.loadFileOpCapabilities(caps)
 	return nil
 }
 func (s *server) supports(method string, d selectorDocument) bool {
@@ -250,7 +252,7 @@ func (s *server) registerCapabilities(params json.RawMessage) (any, int, string)
 			return nil, -32602, "invalid registration ID"
 		}
 		method, err := jsonString(item["method"])
-		if err != nil || (capabilityFields[method] == "" && !isSynchronizationMethod(method) && method != watchedFilesMethod) {
+		if err != nil || (capabilityFields[method] == "" && !isSynchronizationMethod(method) && method != watchedFilesMethod && !isFileOpMethod(method)) {
 			return nil, -32602, "unsupported registration method"
 		}
 		if _, duplicate := batch[id]; duplicate {
@@ -286,6 +288,12 @@ func (s *server) registerCapabilities(params json.RawMessage) (any, int, string)
 					return nil, -32602, err.Error()
 				}
 			}
+			if isFileOpMethod(method) {
+				registration.fileFilters, err = parseFileOpFilters(item["registerOptions"])
+				if err != nil {
+					return nil, -32602, err.Error()
+				}
+			}
 			if raw, exists := options["resolveProvider"]; exists && method == "textDocument/codeAction" {
 				if string(raw) != "true" && string(raw) != "false" {
 					return nil, -32602, "invalid code action resolveProvider"
@@ -293,7 +301,7 @@ func (s *server) registerCapabilities(params json.RawMessage) (any, int, string)
 				resolve = string(raw) == "true"
 			}
 		}
-		if (method == "textDocument/didChange" || method == watchedFilesMethod) && (len(options) == 0 || string(options) == "null") {
+		if (method == "textDocument/didChange" || method == watchedFilesMethod || isFileOpMethod(method)) && (len(options) == 0 || string(options) == "null") {
 			return nil, -32602, "registration options required"
 		}
 		registration.selector, registration.resolve, registration.cost = selector, resolve, len(id)+len(method)+len(options)

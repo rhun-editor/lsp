@@ -46,7 +46,8 @@ check basic
 # the language features change the files: a fresh copy of the project
 printf 'package main\n\nfunc other() {}\n' > "$work/proj/other.go"
 printf 'package main\n\n// TODO first\nfunc main() {\n\tERR := 1\n\t_ = ERR\n}\n' > "$work/proj/main.go"
-run tests/lang.txt | sed 's/pid=[1-9][0-9]*/pid=PID/' > "$work/out.txt"
+# the confirmation list names files by their paths: the scratch folder is WORK
+run tests/lang.txt | sed -e 's/pid=[1-9][0-9]*/pid=PID/' -e "s|/private$work|WORK|g" -e "s|$work|WORK|g" > "$work/out.txt"
 check lang
 
 # Saving must negotiate through the real SDK, format first and then write the resulting bytes.
@@ -57,6 +58,13 @@ printf 'package main\n\nfunc f() {\n\tx := 1\n\t_ = x\n}\n' > "$work/saved.expec
 if ! cmp -s "$work/proj/fmt.go" "$work/saved.expected"; then
     echo "FAIL saved formatting"; exit 1
 fi
+
+# linked editing: HTML's server is the fake one too
+printf '<div>\n  <p>hi</p>\n</div>\n' > "$work/proj/a.html"
+printf '[servers]\nHTML = gopls\n' > "$state/lsp.ini"
+run tests/linked.txt > "$work/out.txt"
+check linked
+rm "$state/lsp.ini"
 
 python3 tests/callbacks.py "$RHUN"
 

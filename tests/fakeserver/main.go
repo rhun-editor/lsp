@@ -7,7 +7,9 @@
 // in the open documents and in other.go beside the file; symbols are the funcs with their
 // variables as children; the code actions at an ERR are a quick fix (ERR to Err) and a command
 // that asks the client to apply an edit (a comment on line 1); rename edits every occurrence of
-// the word in the open documents and in other.go; formatting turns four leading spaces into a tab.
+// the word in the open documents and in other.go; formatting turns four leading spaces into a tab;
+// linked editing ranges are the occurrences of the word under the cursor in an .html document
+// when there are two of them (a tag's name and its closing tag's).
 package main
 
 import (
@@ -64,7 +66,7 @@ func main() {
 		case "initialize":
 			reply(msg.ID, map[string]any{"capabilities": map[string]any{"textDocumentSync": 2, "hoverProvider": true, "definitionProvider": true,
 				"referencesProvider": true, "documentSymbolProvider": true, "codeActionProvider": true, "renameProvider": true,
-				"documentFormattingProvider": true, "executeCommandProvider": map[string]any{"commands": []string{"fake.comment"}},
+				"documentFormattingProvider": true, "linkedEditingRangeProvider": true, "executeCommandProvider": map[string]any{"commands": []string{"fake.comment"}},
 				"completionProvider": map[string]any{"triggerCharacters": []string{"."}}, "signatureHelpProvider": map[string]any{"triggerCharacters": []string{"(", ","}}}})
 		case "shutdown":
 			reply(msg.ID, nil)
@@ -219,6 +221,21 @@ func main() {
 			} else {
 				reply(msg.ID, map[string]any{"changes": changes})
 			}
+		case "textDocument/linkedEditingRange":
+			var p struct {
+				TextDocument struct {
+					URI string `json:"uri"`
+				} `json:"textDocument"`
+				Position position `json:"position"`
+			}
+			json.Unmarshal(msg.Params, &p)
+			w := wordAt(docs[p.TextDocument.URI], p.Position)
+			found := occurrences(docs[p.TextDocument.URI], w)
+			if w == "" || !strings.HasSuffix(p.TextDocument.URI, ".html") || len(found) != 2 {
+				reply(msg.ID, nil)
+				break
+			}
+			reply(msg.ID, map[string]any{"ranges": found, "wordPattern": "[-_\\w.:]+"})
 		case "textDocument/documentSymbol":
 			var p struct {
 				TextDocument struct {
