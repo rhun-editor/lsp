@@ -32,7 +32,9 @@ run() { # SCRIPT: runs it in a fresh editor, the output on stdout
 }
 cell=$(run tests/cell.txt | tail -1)   # where line 5 column 3 is on this platform's font
 sed "s|^move X Y|move $cell|" tests/basic.txt > "$work/basic.src"
-run "$work/basic.src" | sed 's/pid=[1-9][0-9]*/pid=PID/' > "$work/out.txt"
+# confined=2 is a Linux without unprivileged user namespaces (GitHub's Ubuntu runners): Landlock
+# holds the files and TCP rules cut the network, so the extension is held all the same
+run "$work/basic.src" | sed -e 's/pid=[1-9][0-9]*/pid=PID/' -e 's/ confined=2/ confined=1/' > "$work/out.txt"
 check() { # NAME: the output against tests/NAME.expected (UPDATE=1 writes it instead)
     if [ -n "$UPDATE" ]; then cp "$work/out.txt" "tests/$1.expected"; fi
     if cmp -s "$work/out.txt" "tests/$1.expected"; then
