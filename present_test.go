@@ -15,7 +15,7 @@ func TestByteTokens(t *testing.T) {
 		5, 0, 1, 0, 0, // past the text: dropped
 	}
 	got := byteTokens(text, data)
-	want := []uint32{0, 3, 4, 0, 0, 1, 5, 1, 1, 2, 0, 4, 2, 1, 0}
+	want := []uint64{0, 3, 4, 0, 0, 1, 5, 1, 1, 2, 0, 4, 2, 1, 0}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
