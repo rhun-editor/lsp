@@ -264,8 +264,8 @@ func (s *server) loadCapabilities(raw json.RawMessage) error {
 	s.staticTriggers = triggers
 	s.capMu.Unlock()
 	s.loadFileOpCapabilities(caps)
-	s.registerLegend(caps) // its semantic token legend, for rhun (present.go)
 	s.loadFolderCapabilities(caps)
+	s.registerLegend(caps) // its semantic token legend, for rhun (present.go)
 	return nil
 }
 
