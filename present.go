@@ -9,6 +9,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -33,23 +34,58 @@ const (
 )
 
 // currentSoon is l.current, waiting while the document is still reaching its server (rhun asks
-// about the active document as soon as it opens, before the server has started)
+// about the active document as soon as it opens, before the server has started). The wait holds
+// the SDK's event loop, so edits made meanwhile have not reached l.docs: while it waits the
+// server's readiness does not open the document (awaitServer), and when the server is ready rhun
+// is asked whether the document is still at version. If it is, this request opens it; if not, the
+// edits held back open it with the newest text once the request has returned nothing (rhun asks
+// again after them).
 func (l *lsp) currentSoon(id rhunext.Doc, version int64, wait time.Duration) (*documentQuery, []byte, *server) {
+	l.mu.Lock()
+	doc := l.docs[id]
+	if doc == nil || doc.version != version {
+		l.mu.Unlock()
+		return nil, nil, nil
+	}
+	if doc.server != nil && doc.syncedServer == doc.server && doc.syncedVersion == version {
+		l.mu.Unlock()
+		return l.current(id, version)
+	}
+	doc.presWaiting++
+	l.mu.Unlock()
+	defer func() {
+		l.mu.Lock()
+		doc.presWaiting--
+		l.mu.Unlock()
+	}()
 	deadline := time.Now().Add(wait)
-	for {
-		d, text, s := l.current(id, version)
-		if d != nil || time.Now().After(deadline) {
-			return d, text, s
+	for first := true; time.Now().Before(deadline); first = false {
+		if !first {
+			time.Sleep(150 * time.Millisecond)
 		}
 		l.mu.Lock()
-		doc := l.docs[id]
-		gone := doc == nil || doc.version != version
+		gone := l.docs[id] != doc || doc.version != version
+		s := doc.server
 		l.mu.Unlock()
-		if gone {
+		if gone || !l.stillAt(id, version) {
 			return nil, nil, nil
 		}
-		time.Sleep(150 * time.Millisecond)
+		if s != nil && ready(s) {
+			return l.current(id, version)
+		}
 	}
+	return nil, nil, nil
+}
+
+// stillAt says whether rhun's document is still at version (false when it cannot tell)
+func (l *lsp) stillAt(id rhunext.Doc, version int64) bool {
+	if l.ext == nil {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, now, err := l.ext.TextContext(ctx, id)
+	return err == nil && now == version
 }
 
 func init() {

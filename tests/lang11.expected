@@ -21,6 +21,7 @@ linked = *.html *.htm *.xml *.jsx *.tsx *.vue
 semantic_tokens = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css
 inlay_hints = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css
 code_lens = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css
+inline_complete = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css
 colors = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css
 highlights = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css
 folding = *.go *.rs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.py *.c *.h *.cc *.cpp *.cxx *.hpp *.hh *.zig *.lua *.rb *.dart *.kt *.kts *.swift *.ml *.mli *.hs *.ex *.exs *.nix *.tf *.yaml *.yml *.json *.html *.htm *.css

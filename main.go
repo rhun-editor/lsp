@@ -77,6 +77,7 @@ type document struct {
 	syncChange    int
 	fetching      bool
 	awaiting      *server
+	presWaiting   int // presentation requests waiting for its first synchronization (present.go)
 	pendingSave   bool
 	saveVersion   int64
 }

@@ -219,8 +219,11 @@ func (l *lsp) awaitServer(d *document, s *server) {
 		if d.awaiting == s {
 			d.awaiting = nil
 		}
+		waiting := d.presWaiting > 0
 		l.mu.Unlock()
-		l.ensureSynchronized(d, s)
+		if !waiting { // (a waiting presentation request opens it, or the edits it holds back do)
+			l.ensureSynchronized(d, s)
+		}
 	}()
 }
 func (l *lsp) fetchDocument(d *document) {
