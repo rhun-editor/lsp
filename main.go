@@ -710,6 +710,7 @@ func (l *lsp) clientCapabilities(watch bool) map[string]any {
 		"window":  map[string]any{"workDoneProgress": true, "showDocument": map[string]any{"support": true}},
 		"general": map[string]any{"positionEncodings": []string{"utf-16"}}}
 	text["synchronization"].(map[string]any)["dynamicRegistration"] = true
+	l.presentationCaps(text) // folding, semantic tokens, hints, lens, highlights, colors (present.go)
 	for _, info := range capabilityFields {
 		section, name, _ := strings.Cut(info.client, ".")
 		if group, ok := caps[section].(map[string]any); ok {
@@ -751,7 +752,10 @@ func main() {
 		// workspace edits as transactions, file operations, showDocument, linked editing
 		rhunext.FeatureWorkspaceEdits, rhunext.FeatureFileOperations, rhunext.FeatureReveal, rhunext.FeatureLinkedEditing,
 		// the window's folders: the servers' workspace folders
-		rhunext.FeatureWorkspaceFolders}
+		rhunext.FeatureWorkspaceFolders,
+		// folding, semantic tokens, inlay hints, code lens, highlights and colors (present.go)
+		rhunext.FeatureFoldingRanges, rhunext.FeatureSemanticTokens, rhunext.FeatureInlayHints, rhunext.FeatureCodeLens,
+		rhunext.FeatureHighlights, rhunext.FeatureColors}
 	l := &lsp{}
 	err := rhunext.RunWith(features, l)
 	l.shutdown()
