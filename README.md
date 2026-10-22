@@ -245,13 +245,6 @@ each protocol 1.1 mapping through the real SDK against an in-process fake rhun a
 `rhun-editor/extension-template`.
 
 
-Unreleased protocol 1.1 additions require the matching source SDK. Create a `go.work` outside
-these repositories with `go work init /path/to/extension-protocol /path/to/lsp`, and set
-`GOWORK` to that absolute file for builds and tests. Build the checkout's checker and pass it as
-`RHUN_EXT_CHECK` to `tests/check.sh`. CI checks out both source repositories and builds its own
-checker and host, so it does not silently validate older releases. Publish and pin the new SDK
-version before releasing an extension that uses this API.
-
 The native gate also runs `tests/source-actions.py`: sequential edits, source-kind filtering,
 resolution, command reply/edits ordering, fresh command sessions, duplicate action handling,
 versions, foreign edits, cancellation, timeout and typing during a save.
