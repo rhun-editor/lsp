@@ -59,12 +59,15 @@ var capabilityAliases = map[string]string{
 }
 
 func init() {
-	for method, field := range map[string]string{
-		"textDocument/foldingRange": "foldingRangeProvider", "textDocument/semanticTokens": "semanticTokensProvider",
-		"textDocument/inlayHint": "inlayHintProvider", "textDocument/codeLens": "codeLensProvider",
-		"textDocument/documentHighlight": "documentHighlightProvider", "textDocument/documentColor": "colorProvider",
+	for method, info := range map[string]capabilityInfo{
+		"textDocument/foldingRange":      {"foldingRangeProvider", "textDocument.foldingRange", false},
+		"textDocument/semanticTokens":    {"semanticTokensProvider", "textDocument.semanticTokens", false},
+		"textDocument/inlayHint":         {"inlayHintProvider", "textDocument.inlayHint", false},
+		"textDocument/codeLens":          {"codeLensProvider", "textDocument.codeLens", false},
+		"textDocument/documentHighlight": {"documentHighlightProvider", "textDocument.documentHighlight", false},
+		"textDocument/documentColor":     {"colorProvider", "textDocument.colorProvider", false},
 	} {
-		capabilityFields[method] = field
+		capabilityFields[method] = info
 	}
 }
 
