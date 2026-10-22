@@ -8,7 +8,7 @@ errors=2 warnings=1
 hover=1 5 2 sent=1 text=
 card=shown kind=pointer line=5 col=2 focused=0 waiting=0 range=0
 section diag: error: ERR here
-section ext rhun-editor/lsp: fake: ERR
+section ext rhun-editor/lsp: ```go\nfake: ERR\n```
 4 4 4 8 warning problems:rhun-editor/lsp TODO here
 6 2 6 5 error problems:rhun-editor/lsp ERR here
 7 6 7 9 error problems:rhun-editor/lsp ERR here
@@ -16,7 +16,7 @@ errors=2 warnings=1
 tabs=1 active=main.go line=4 col=1 sel=0 dirty=1 lang=Go focus=0 theme=rhun-dark
 tabs=1 active=main.go line=1 col=1 sel=0 dirty=1 lang=Go focus=0 theme=rhun-dark
 complete open=2 items=4 shown=3 sel=0 labels=Println|Printf|Sprint
-selected label=Println detail=func(a ...any) (n int, err error) doc=Println formats using the default formats. resolved=0 replace=0 commit= suffix= deprecated=0 waiting=0
+selected label=Println detail=func(a ...any) (n int, err error) doc=Println formats using the **default** formats. resolved=0 replace=0 commit= suffix= deprecated=0 waiting=0
 signature open=0 from=0 to=0 text=
 complete open=0 items=0 shown=0 sel=0 labels=
 signature open=1 from=23 to=33 text=func Println(a ...any, sep string)
