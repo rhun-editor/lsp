@@ -116,7 +116,7 @@ func TestSourceResolveCapabilityHonorsStaticAndDynamicOptions(t *testing.T) {
 		}
 	}
 	s.capMu.Lock()
-	s.staticResolve = false
+	s.staticOptions = nil
 	s.capMu.Unlock()
 	raw := json.RawMessage(`{"registrations":[{"id":"source","method":"textDocument/codeAction","registerOptions":{"documentSelector":[{"language":"go"}],"resolveProvider":true}}]}`)
 	if _, code, why := s.registerCapabilities(raw); code != 0 {

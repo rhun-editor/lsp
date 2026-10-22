@@ -253,7 +253,7 @@ func TestCommandEditSnapshotsAndOperations(t *testing.T) {
 	}
 }
 
-func TestClientCapabilitiesFollowTheAgreedFeatures(t *testing.T) {
+func TestWorkspaceEditCapabilitiesFollowTheAgreedFeatures(t *testing.T) {
 	if c := workspaceEditCapabilities(editCaps{}); fmt.Sprint(c["resourceOperations"]) != "[]" || c["failureHandling"] != nil {
 		t.Fatal(c)
 	}

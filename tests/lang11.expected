@@ -1,0 +1,61 @@
+ext=lsp state=running
+complete = *.go
+complete.triggers = . : >
+signature = *.go
+signature.triggers = ( ,
+definition = *.go
+references = *.go
+symbols = *.go
+actions = *.go
+rename = *.go
+format = *.go
+save_actions = *.go
+hover = *.go
+declaration = *.go
+implementation = *.go
+call_hierarchy = *.go
+range_format = *.go
+type_format = *.go
+type_format.triggers = newline }
+linked = *.html *.htm *.xml *.jsx *.tsx *.vue
+problem path=WORK/proj/main.go line=3 col=4 end=3:8 severity=warning code=fake source=rhun-editor/lsp message=TODO here
+problem path=WORK/proj/main.go line=5 col=2 end=5:5 severity=error code=fake(E1) source=rhun-editor/lsp message=ERR here
+problem path=WORK/proj/main.go line=6 col=6 end=6:9 severity=error code=fake(E1) source=rhun-editor/lsp message=ERR here
+tabs=1 active=main.go line=6 col=11 sel=0 dirty=0 lang=Go focus=0 theme=rhun-dark
+set=1/1 kind=references cur=-1 title=2 references to ERR
+row 0 y=372 d=0 open id=fWORK/proj/main.go label=main.go badge=2 icon=3
+row 1 y=400 d=1 leaf id=WORK/proj/main.go5:2-5:5 label=5:2  ERR := 1
+row 2 y=428 d=1 leaf id=WORK/proj/main.go6:6-6:9 label=6:6  _ = ERR
+tabs=1 active=main.go line=5 col=8 sel=3 dirty=0 lang=Go focus=0 theme=rhun-dark
+tabs=1 active=main.go line=4 col=10 sel=4 dirty=0 lang=Go focus=0 theme=rhun-dark
+toast=Nothing to rename here
+none
+package main
+
+// TODO first
+func main() {
+	Err := 1
+	_ = ERR
+}
+
+<eod>
+package main
+
+func f() {
+	x := 1
+    _ = x
+}
+
+<eod>
+package main
+
+func f() {
+	x := 1
+	_ = x
+    
+}
+
+<eod>
+set=2/2 kind=calls-in cur=-1 title=Incoming calls of leaf
+row 0 y=372 d=0 open cur id=h0 label=leaf desc=func()  calls.go:3
+row 1 y=400 d=1 closed id=h1 label=caller desc=func()  calls.go:5  (2 calls)

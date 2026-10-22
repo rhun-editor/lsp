@@ -49,6 +49,30 @@ func (l *lsp) current(id rhunext.Doc, version int64) (*documentQuery, []byte, *s
 	}
 	return q, q.text, s
 }
+
+// latest is the document's current query, whatever its version (a completion item's resolve
+// comes after the user typed on)
+func (l *lsp) latest(id rhunext.Doc) (*documentQuery, []byte, *server) {
+	l.mu.Lock()
+	d := l.docs[id]
+	if d == nil || d.text == nil || d.server == nil {
+		l.mu.Unlock()
+		return nil, nil, nil
+	}
+	s := d.server
+	l.mu.Unlock()
+	if !ready(s) || !l.ensureSynchronized(d, s) {
+		return nil, nil, nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	q := l.captureQueryLocked(d)
+	if q == nil {
+		return nil, nil, nil
+	}
+	return q, q.text, s
+}
+
 func (q *documentQuery) request(wait time.Duration, method string, params any) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
