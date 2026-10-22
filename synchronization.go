@@ -221,8 +221,10 @@ func (l *lsp) awaitServer(d *document, s *server) {
 		}
 		waiting := d.presWaiting > 0
 		l.mu.Unlock()
-		if !waiting { // (a waiting presentation request opens it, or the edits it holds back do)
-			l.ensureSynchronized(d, s)
+		// (a waiting presentation request opens it, or the edits it holds back do; edits on
+		// their way, when rhun is past the cached text, open it with the newest)
+		if !waiting {
+			l.openIfCurrent(d)
 		}
 	}()
 }

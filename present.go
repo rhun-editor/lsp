@@ -36,10 +36,13 @@ const (
 // currentSoon is l.current, waiting while the document is still reaching its server (rhun asks
 // about the active document as soon as it opens, before the server has started). The wait holds
 // the SDK's event loop, so edits made meanwhile have not reached l.docs: while it waits the
-// server's readiness does not open the document (awaitServer), and when the server is ready rhun
-// is asked whether the document is still at version. If it is, this request opens it; if not, the
-// edits held back open it with the newest text once the request has returned nothing (rhun asks
-// again after them).
+// server's readiness does not open the document (awaitServer), and once the server is ready rhun
+// is asked whether the document is still at version, right before this request opens it (never
+// before the wait for readiness, which the user may type through). If it is, this request opens
+// it; if not, the edits held back open it with the newest text once the request has returned
+// nothing (rhun asks again after them). A request that gives up after the server became ready
+// opens the document itself when rhun is at the cached text's version, as no held-back edit is
+// then newer than the cache to open it (a refresh read rhun's newer text meanwhile).
 func (l *lsp) currentSoon(id rhunext.Doc, version int64, wait time.Duration) (*documentQuery, []byte, *server) {
 	l.mu.Lock()
 	doc := l.docs[id]
@@ -53,32 +56,88 @@ func (l *lsp) currentSoon(id rhunext.Doc, version int64, wait time.Duration) (*d
 	}
 	doc.presWaiting++
 	l.mu.Unlock()
+	answered := false
 	defer func() {
 		l.mu.Lock()
 		doc.presWaiting--
 		l.mu.Unlock()
+		if !answered {
+			l.openIfCurrent(doc)
+		}
 	}()
 	deadline := time.Now().Add(wait)
+	var readyCh <-chan struct{}
 	for first := true; time.Now().Before(deadline); first = false {
 		if !first {
-			time.Sleep(150 * time.Millisecond)
+			select { // (readiness ends the pause at once)
+			case <-readyCh:
+			case <-time.After(150 * time.Millisecond):
+			}
 		}
 		l.mu.Lock()
 		gone := l.docs[id] != doc || doc.version != version
 		s := doc.server
 		l.mu.Unlock()
-		if gone || !l.stillAt(id, version) {
+		if gone {
 			return nil, nil, nil
 		}
-		if s != nil && ready(s) {
-			return l.current(id, version)
+		state := serverPending
+		if s != nil {
+			readyCh, state = s.readyCh, readiness(s)
+		}
+		if state == serverEnded || !l.stillAt(id, version) {
+			return nil, nil, nil
+		}
+		if state == serverReady {
+			q, text, rs := l.current(id, version)
+			answered = q != nil
+			return q, text, rs
 		}
 	}
 	return nil, nil, nil
 }
 
+const (
+	serverPending = iota
+	serverReady
+	serverEnded
+)
+
+// readiness is whether the server is ready, without waiting for it
+func readiness(s *server) int {
+	if s.ready.Load() {
+		return serverReady
+	}
+	select {
+	case <-s.readyCh:
+		if s.ready.Load() {
+			return serverReady
+		}
+		return serverEnded
+	default:
+		return serverPending
+	}
+}
+
+// openIfCurrent opens (or brings up to date) a document its ready server lacks when rhun is at
+// the cached text's version; when rhun is past it, the edits on their way do it.
+func (l *lsp) openIfCurrent(d *document) {
+	l.mu.Lock()
+	s, version := d.server, d.version
+	pending := l.docs[d.id] == d && !l.stopping && s != nil && d.text != nil && !(d.syncedServer == s && d.syncedVersion == version)
+	l.mu.Unlock()
+	if !pending || !s.ready.Load() || !l.stillAt(d.id, version) {
+		return
+	}
+	l.ensureSynchronized(d, s)
+}
+
 // stillAt says whether rhun's document is still at version (false when it cannot tell)
 func (l *lsp) stillAt(id rhunext.Doc, version int64) bool {
+	if l.fetchText != nil { // (tests)
+		_, now, err := l.fetchText(id)
+		return err == nil && now == version
+	}
 	if l.ext == nil {
 		return true
 	}

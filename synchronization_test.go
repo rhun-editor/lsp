@@ -277,3 +277,90 @@ func TestURIPathsAsRhunWritesThem(t *testing.T) {
 		t.Fatal("the document was not found by the server's URI")
 	}
 }
+
+// A presentation request waits for a server still initializing while rhun types (the edits are
+// held back behind the request in the SDK's event loop). Readiness must not open the document with
+// the text rhun has moved past: rhun is asked for the version once the server is ready, and the
+// held-back edits open it with the newest text.
+func TestPresentationWaitDoesNotOpenTextTypedOverWhileWaiting(t *testing.T) {
+	l, s, d, p := syncHarness(t, synchronizationOptions{openClose: true, change: 2})
+	s.ready.Store(false)
+	var rhunVersion atomic.Int64
+	rhunVersion.Store(1)
+	asked := make(chan struct{}, 64)
+	l.fetchText = func(rhunext.Doc) ([]byte, int64, error) {
+		asked <- struct{}{}
+		if rhunVersion.Load() == 1 {
+			return []byte("a"), 1, nil
+		}
+		return []byte("ax"), 2, nil
+	}
+	l.awaitServer(d, s)
+	result := make(chan *documentQuery, 1)
+	go func() {
+		q, _, _ := l.currentSoon(1, 1, 5*time.Second)
+		result <- q
+	}()
+	<-asked // the request asked rhun while the server was starting: still at 1
+	time.Sleep(20 * time.Millisecond)
+	rhunVersion.Store(2) // the user types; the edits wait for the request
+	s.ready.Store(true)
+	close(s.readyCh)
+	if q := <-result; q != nil {
+		t.Fatalf("answered for version 1 after rhun moved on: %v", p.messages(t))
+	}
+	if m := p.messages(t); len(m) != 0 {
+		t.Fatalf("opened before the held-back edits: %v", m)
+	}
+	l.documentEvent(docEvent("edits", 2, "1 0 1\nx"))
+	messages := p.messages(t)
+	if len(messages) != 1 || messages[0]["method"] != "textDocument/didOpen" || messages[0]["params"].(map[string]any)["textDocument"].(map[string]any)["text"] != "ax" {
+		t.Fatal(messages)
+	}
+}
+
+// The same wait, but a refresh read rhun's newer text into the cache just as the server became
+// ready, and the readiness open stood back for the waiting request (here a second request holds
+// it back for certain): the edits held back are then no newer than the cached text and open
+// nothing, so the request that gave up must open the document itself.
+func TestPresentationWaitThatGivesUpStillOpensTheDocument(t *testing.T) {
+	l, s, d, p := syncHarness(t, synchronizationOptions{openClose: true, change: 2})
+	s.ready.Store(false)
+	var rhunVersion atomic.Int64
+	rhunVersion.Store(1)
+	l.fetchText = func(rhunext.Doc) ([]byte, int64, error) {
+		if rhunVersion.Load() == 1 {
+			return []byte("a"), 1, nil
+		}
+		return []byte("ax"), 2, nil
+	}
+	l.awaitServer(d, s)
+	l.mu.Lock()
+	d.presWaiting++
+	l.mu.Unlock()
+	result := make(chan *documentQuery, 1)
+	go func() {
+		q, _, _ := l.currentSoon(1, 1, 5*time.Second)
+		result <- q
+	}()
+	eventually(t, func() bool { l.mu.Lock(); defer l.mu.Unlock(); return d.presWaiting == 2 })
+	time.Sleep(20 * time.Millisecond)
+	rhunVersion.Store(2) // the user types
+	l.mu.Lock()
+	d.text, d.version = []byte("ax"), 2 // the refresh, as the server becomes ready
+	s.ready.Store(true)
+	l.mu.Unlock()
+	close(s.readyCh)
+	if q := <-result; q != nil {
+		t.Fatal("answered for version 1")
+	}
+	l.documentEvent(docEvent("edits", 2, "1 0 1\nx")) // held back, no newer than the text: ignored
+	time.Sleep(50 * time.Millisecond)
+	messages := p.messages(t)
+	if len(messages) != 1 || messages[0]["method"] != "textDocument/didOpen" || messages[0]["params"].(map[string]any)["textDocument"].(map[string]any)["text"] != "ax" {
+		t.Fatal(messages)
+	}
+	l.mu.Lock()
+	d.presWaiting--
+	l.mu.Unlock()
+}
