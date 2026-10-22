@@ -104,6 +104,8 @@ func (s *server) endServer(reason string) {
 		reason = s.name() + " exited"
 	}
 	s.status(reason, true)
+	s.l.scopeChanged()
+	go s.l.dropDiagnostics(s)
 }
 
 func readRPC(br *bufio.Reader) ([]byte, error) {
@@ -203,6 +205,21 @@ func validateEnvelope(msg map[string]json.RawMessage) error {
 	}
 	return nil
 }
+
+// serverError is the error a server answered a request with
+type serverError struct {
+	Code    int
+	Message string
+}
+
+func (e *serverError) Error() string { return e.Message }
+
+// LSP's error codes for a request the server dropped because it was cancelled or its document
+// changed meanwhile
+const (
+	codeRequestCancelled = -32800
+	codeContentModified  = -32801
+)
 
 func writeAll(w io.Writer, data []byte) error {
 	for len(data) > 0 {
@@ -400,7 +417,9 @@ func (s *server) callContextRegistered(ctx context.Context, method string, param
 		if json.Unmarshal(raw, &detail) != nil || json.Unmarshal(detail["message"], &message) != nil {
 			return nil, errors.New("invalid JSON-RPC error")
 		}
-		return nil, errors.New(message)
+		var code int
+		json.Unmarshal(detail["code"], &code)
+		return nil, &serverError{Code: code, Message: message}
 	}
 	return reply["result"], nil
 }

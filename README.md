@@ -1,14 +1,19 @@
 # lsp
 
 Language servers for [rhun](https://rhun.app): completion lists as you type (`ctrl+space` for
-one at once), signature help inside a call (`ctrl+shift+space`), diagnostics in the gutter and
-the status bar, hover text when the pointer rests on a symbol, **Go to Definition** (F12),
-**Find All References** (shift+F12), **Go to Symbol in File** (ctrl+r), **code actions**
-(ctrl+.: the server's quick fixes, refactorings and commands), **Rename Symbol** (F2 on a word:
-with rhun 0.18 one change across files, files that are not open changed on disk after you
-confirm, undone with one Undo; earlier rhun opens every changed file unsaved for you to review),
-**linked editing** (an HTML tag's name and its closing tag's change together) and **Format
-Document** (shift+alt+f, with the document's tab width and spaces). One server per
+one at once), signature help inside a call (`ctrl+shift+space`), diagnostics in the gutter, the
+status bar and the Problems panel (`ctrl+shift+m`, files that are not open too), the hover card,
+**Go to Definition** (F12), **Go to Declaration**, **Go to Type Definition**, **Go to
+Implementation** (ctrl+F12), **Find All References** (shift+F12, in the Results panel as the
+server finds them), call and type hierarchies (shift+alt+h), **Go to Symbol in File** (ctrl+r)
+and **in Project** (ctrl+t), **code actions** (ctrl+.: the server's quick fixes, refactorings and
+source actions; Auto Fix shift+alt+., Organize Imports shift+alt+o), **Rename Symbol** (F2: the
+server says what can be renamed; with rhun 0.18 one change across files, files that are not open
+changed on disk after you confirm, undone with one Undo; earlier rhun opens every changed file
+unsaved for you to review), **linked editing** (an HTML tag's name and its closing tag's change
+together), **Format Document** (shift+alt+f), Format Selection, formatting as you type (with
+rhun's `[editor] format_on_type = yes`), Expand and Shrink Selection (shift+alt+Right / Left) and
+links under ctrl+hover. One server per
 language per project, started when the first document of the language opens, run from the
 project folder. Nothing is downloaded: the extension runs the server you already have on your
 `PATH`:
@@ -49,6 +54,27 @@ versions from the initial request, including time spent waiting in the picker. A
 is rejected; open that file before selecting the action. Sequential command callbacks advance only
 the snapshots for their successfully applied changes. A failure rejects the remaining callbacks.
 
+## What rhun is asked for
+
+Each server says what it can do, and the extension tells rhun which kinds each file pattern is
+really served for: a language whose server is missing or turned off is not asked at all (F2 then
+renames the file, and another extension may format it), a running server is asked only for what
+it declared or registered, and formatting as you type triggers on the characters the running
+servers asked for. A language whose server has not started yet keeps its patterns until it does.
+
+Long answers stream: references, implementations, definitions, workspace symbols and hierarchy
+calls show as the server sends partial results, its progress shows on the request, and rhun
+withdrawing a request (Escape, a new query) cancels it on the server. Diagnostics carry their
+codes, links, tags and related places into the Problems panel, and code actions get back the
+diagnostics they are about by id. Code actions are listed by kind with the server's preferred
+fix and disabled reasons; actions the server resolves lazily are resolved when chosen. An
+action's server command is a reference to the extension's runtime command `lsp.exec`: rhun runs
+it after the action's edit, and the extension sends the command to the server, whose edits come
+back as one apply request each (rhun builds without `command-args` get the command run by the
+extension when the action is chosen). Hover text and documentation are Markdown where rhun
+renders it, else plain text. Servers that offer diagnostics on request are asked for an open
+document's after it changes.
+
 ## Workspace edits, file operations, linked editing (rhun 0.18)
 
 Version 0.3.0 requires rhun 0.18 for these and the SDK v1.4.0 (protocol 1.1's features
@@ -76,6 +102,14 @@ becomes the characters rhun lets you type in the ranges, another keeps rhun's de
 `window/showDocument` opens the file in rhun with the selection and reveals it; external
 documents and other schemes are refused, and rhun always activates the tab it opens.
 
+## Workspace folders
+
+With rhun's workspace folders (a window with several folders), every folder is a workspace folder
+of the servers: `initialize` names them all (`rootUri` the primary one), `workspace/workspaceFolders`
+answers them and `workspace/configuration` may name resources in any of them. As the extension
+reads the project, rhun restarts it when the folders change, and the servers start again with the
+new set; a server that is told of changes while it runs (`changeNotifications`, or a registration)
+gets `workspace/didChangeWorkspaceFolders`.
 
 ## Folding, semantic colors, inlay hints, code lens, highlights and colors
 
@@ -163,8 +197,9 @@ cancellable. The server decides when cancellation completes. Progress from a rep
 cannot overwrite its replacement's status.
 
 Language services follow the server's advertised capabilities. Servers may also register or
-remove hover, completion, signature help, definition, references, document symbols, code actions,
-rename and formatting while running. Registrations can select documents by language, URI
+remove any of them (hover, completion, signature help, the definition-likes, references,
+symbols, code actions, rename, formatting, hierarchies, selection ranges, links and diagnostics
+on request) while running. Registrations can select documents by language, URI
 scheme and path glob, including relative patterns. Invalid batches are rejected together.
 There are at most 256 registrations and 1 MiB of registration options per server. Removing a
 registration suppresses queued queries before the removal acknowledgement; requests already
@@ -197,7 +232,14 @@ runs to load the packages (without it gopls answers "no views"); no network.
 `tests/run.sh [RHUN]` builds the extension and a fake language server, points the extension at
 the fake through `lsp.ini`, lays everything out as rhun installs it and runs `tests/basic.txt`
 headlessly: diagnostics, marks following an edit, incremental sync agreeing with the editor,
-hover, go to definition, configuration callbacks, reloads, progress and cancellation. Releases are built by the reusable workflow from
+hover, go to definition, configuration callbacks, reloads, progress and cancellation;
+`tests/lang.txt` and `tests/lang11.txt` the language features, including the provider scope,
+references with a partial result, declaration, implementation, prepare-rename, Auto Fix, Format
+Selection, formatting as you type, the call hierarchy and the Problems store; `tests/linked.txt`
+linked editing in an HTML document; `tests/folders.txt` two workspace folders and a third added.
+The Go tests drive
+each protocol 1.1 mapping through the real SDK against an in-process fake rhun and fake server
+(`harness_test.go`). Releases are built by the reusable workflow from
 `rhun-editor/extension-template`.
 
 

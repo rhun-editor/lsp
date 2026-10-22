@@ -106,8 +106,23 @@ type lsp struct {
 	statusOnce                     sync.Once
 	stopping                       bool
 	config                         map[string][]string
-	diags                          map[string][]json.RawMessage // the server's diagnostics by path, for code actions
-	pending                        pendingFileOps               // file operations of edits answered to rhun
+	diags                          map[string]*keptDiagnostics // the server's diagnostics by path (diagnostics.go)
+	scopeWake                      chan struct{}               // provider scope (scope.go)
+	found                          map[string]bool
+	foundGeneration                uint64
+	actionsMu                      sync.Mutex // code actions waiting to be chosen (codeactions.go)
+	actionSerial                   uint64
+	actionSets                     map[uint64][]actionData
+	diagOwner                      map[string]*server // which server's set rhun has for a file (diagnostics.go)
+	diagMu                         sync.Mutex
+	diagJobs                       []diagnosticsJob
+	diagRunning                    bool
+	pullMu                         sync.Mutex
+	pulls                          map[*document]*pullState
+	execReady                      atomic.Bool       // the exec command is registered (codeactions.go)
+	folders                        []workspaceFolder // rhun's workspace folders (folders.go)
+	foldersKnown                   bool
+	pending                        pendingFileOps // file operations of edits answered to rhun
 }
 
 func (l *lsp) Ready(ext *rhunext.Ext, project string) {
@@ -117,8 +132,9 @@ func (l *lsp) Ready(ext *rhunext.Ext, project string) {
 	l.docs = map[rhunext.Doc]*document{}
 	l.byPath = map[string]*document{}
 	l.servers = map[string]*server{}
-	l.diags = map[string][]json.RawMessage{}
+	l.diags = map[string]*keptDiagnostics{}
 	l.startStatusWorker()
+	l.startScopeWorker()
 	var err error
 	l.config, err = readConfig(filepath.Join(l.state, "lsp.ini"))
 	if err != nil {
@@ -131,9 +147,13 @@ func (l *lsp) Ready(ext *rhunext.Ext, project string) {
 		l.settings = &settingsConfig{}
 		l.configError(err)
 	}
+	l.registerExec()
 }
 
 func (l *lsp) Event(ext *rhunext.Ext, ev rhunext.Event) {
+	if l.folderEvent(ev) {
+		return
+	}
 	l.workspaceWatchEvent(ev)
 	l.documentEvent(ev)
 	l.fileOpEvent(ev)
@@ -187,6 +207,7 @@ func (l *lsp) Run(ext *rhunext.Ext, command string, doc rhunext.Doc) {
 		for _, d := range docs {
 			go l.open(d)
 		}
+		l.scopeChanged()
 		ext.Toast("Language servers restarted")
 	}
 }
@@ -207,6 +228,7 @@ func (l *lsp) serverFor(lang string) *server {
 	if argv == nil {
 		argv = servers[lang]
 	}
+	defer l.scopeChanged()
 	if len(argv) == 0 {
 		l.servers[lang] = nil
 		return nil
@@ -227,38 +249,45 @@ func (l *lsp) serverFor(lang string) *server {
 // ---- a language server
 
 type server struct {
-	l                  *lsp
-	lang               string
-	argv               []string
-	cmd                *exec.Cmd
-	in                 io.WriteCloser
-	out                io.ReadCloser
-	writeGate          chan struct{}
-	cancelOnce         sync.Once
-	cancels            chan int
-	waitDone           chan struct{}
-	processExited      atomic.Bool
-	nextID             int
-	pmu                sync.Mutex
-	pending            map[int]chan json.RawMessage
-	ready              atomic.Bool
-	ended              atomic.Bool
-	stateMu            sync.Mutex
-	configMu           sync.Mutex
-	done               chan struct{}
-	generation         uint64
-	readyCh            chan struct{}
-	capMu              sync.RWMutex
-	staticCapabilities map[string]bool
-	staticResolve      bool
-	registrations      map[string]capabilityRegistration
-	syncOptions        synchronizationOptions
-	syncGeneration     uint64
-	watchGeneration    uint64
-	commandMu          sync.Mutex
-	commandCapture     *commandCapture
-	commandUsed        atomic.Bool
-	fileOpFilters      map[string][]fileOpFilter // workspace.fileOperations: create, rename, delete
+	l                   *lsp
+	lang                string
+	argv                []string
+	cmd                 *exec.Cmd
+	in                  io.WriteCloser
+	out                 io.ReadCloser
+	writeGate           chan struct{}
+	cancelOnce          sync.Once
+	cancels             chan int
+	waitDone            chan struct{}
+	processExited       atomic.Bool
+	nextID              int
+	pmu                 sync.Mutex
+	pending             map[int]chan json.RawMessage
+	ready               atomic.Bool
+	ended               atomic.Bool
+	stateMu             sync.Mutex
+	configMu            sync.Mutex
+	done                chan struct{}
+	generation          uint64
+	readyCh             chan struct{}
+	capMu               sync.RWMutex
+	staticCapabilities  map[string]bool
+	staticOptions       map[string]bool // providerOption of each static provider
+	staticTriggers      []string        // on-type formatting's
+	registrations       map[string]capabilityRegistration
+	syncOptions         synchronizationOptions
+	syncGeneration      uint64
+	watchGeneration     uint64
+	commandMu           sync.Mutex
+	commandCapture      *commandCapture
+	commandUsed         atomic.Bool
+	tokenMu             sync.Mutex
+	feeds               map[string]*queryFeed     // the extension's request tokens (stream.go)
+	fileOpFilters       map[string][]fileOpFilter // workspace.fileOperations: create, rename, delete
+	staticFolderChanges bool                      // workspace.workspaceFolders.changeNotifications
+	folderMu            sync.Mutex
+	folders             []workspaceFolder // the folders it knows (folders.go)
+	foldersSent         bool
 }
 
 type location struct {
@@ -299,58 +328,16 @@ func (s *server) start() {
 	s.l.mu.Lock()
 	options := s.l.settings.forLanguage(s.lang).InitializationOptions
 	folders := s.l.workspaceFolders()
-	var root any
-	if s.l.project != "" && s.l.project != "-" {
-		root = fileURI(s.l.project)
-	}
+	initial, known, root := s.l.initializeFolders()
 	s.l.mu.Unlock()
+	s.folderMu.Lock()
+	s.folders, s.foldersSent = initial, known
+	s.folderMu.Unlock()
 	initializeParams := map[string]any{
 		"processId": os.Getpid(), "rootUri": root,
 		"workspaceFolders":      folders,
 		"initializationOptions": options,
-		"capabilities": map[string]any{
-			"textDocument": map[string]any{
-				"synchronization":    map[string]any{"didSave": true, "dynamicRegistration": true},
-				"publishDiagnostics": map[string]any{"versionSupport": true},
-				"hover":              map[string]any{"contentFormat": []string{"plaintext", "markdown"}},
-				"definition":         map[string]any{"linkSupport": true},
-				"references":         map[string]any{},
-				"documentSymbol":     map[string]any{"hierarchicalDocumentSymbolSupport": true},
-				"codeAction": map[string]any{"isPreferredSupport": true, "disabledSupport": true,
-					"dataSupport": true, "resolveSupport": map[string]any{"properties": []string{"edit", "command"}},
-					"codeActionLiteralSupport": map[string]any{"codeActionKind": map[string]any{"valueSet": []string{
-						"", "quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite", "source",
-						"source.organizeImports", "source.fixAll"}}}},
-				"rename":     map[string]any{"prepareSupport": false},
-				"formatting": map[string]any{},
-				"completion": map[string]any{"contextSupport": true, "completionItem": map[string]any{
-					"snippetSupport": false, "documentationFormat": []string{"plaintext", "markdown"}}},
-				"signatureHelp": map[string]any{"contextSupport": true, "signatureInformation": map[string]any{
-					"documentationFormat":  []string{"plaintext", "markdown"},
-					"parameterInformation": map[string]any{"labelOffsetSupport": true}, "activeParameterSupport": true}},
-			},
-			"window": map[string]any{"workDoneProgress": true, "showDocument": map[string]any{"support": true}},
-			"workspace": map[string]any{"configuration": true, "workspaceFolders": true, "applyEdit": true, "executeCommand": map[string]any{},
-				"workspaceEdit": workspaceEditCapabilities(s.l.editCaps())},
-			"general": map[string]any{"positionEncodings": []string{"utf-16"}},
-		}}
-	if s.l.workspaceWatchAvailable() {
-		initializeParams["capabilities"].(map[string]any)["workspace"].(map[string]any)["didChangeWatchedFiles"] = map[string]any{"dynamicRegistration": true, "relativePatternSupport": true}
-	}
-	if s.l.ext != nil && s.l.ext.Has(rhunext.FeatureLinkedEditing) {
-		initializeParams["capabilities"].(map[string]any)["textDocument"].(map[string]any)["linkedEditingRange"] = map[string]any{}
-	}
-	if s.l.editCaps().ops {
-		initializeParams["capabilities"].(map[string]any)["workspace"].(map[string]any)["fileOperations"] = map[string]any{
-			"dynamicRegistration": true, "didCreate": true, "didRename": true, "didDelete": true}
-	}
-	textCaps := initializeParams["capabilities"].(map[string]any)["textDocument"].(map[string]any)
-	s.l.presentationCaps(textCaps) // folding, semantic tokens, hints, lens, highlights, colors (present.go)
-	for method := range capabilityFields {
-		name := strings.TrimPrefix(method, "textDocument/")
-		if options, ok := textCaps[name].(map[string]any); ok {
-			options["dynamicRegistration"] = true
-		}
+		"capabilities":          s.l.clientCapabilities(s.l.workspaceWatchAvailable()),
 	}
 	res, err := s.call("initialize", initializeParams)
 	if err != nil {
@@ -371,6 +358,8 @@ func (s *server) start() {
 		return
 	}
 	s.status(s.name(), false)
+	s.l.scopeChanged()
+	s.syncFolders() // folders that changed while it started
 }
 
 func (s *server) waitReady() { <-s.readyCh }
@@ -421,7 +410,9 @@ func (s *server) read(br *bufio.Reader) {
 				ch <- body
 			}
 		case msg.Method == "$/progress":
-			s.progress(msg.Params)
+			if !s.feedProgress(msg.Params) {
+				s.progress(msg.Params)
+			}
 		case msg.Method == "textDocument/publishDiagnostics":
 			s.publish(msg.Params)
 		case msg.Method == "window/showDocument" && len(msg.ID) > 0:
@@ -438,26 +429,23 @@ func (s *server) read(br *bufio.Reader) {
 	}
 }
 
+// publish takes textDocument/publishDiagnostics: kept for code actions, given to rhun as the file's
+// set (file-diagnostics) or as the open document's v1 diagnostics
 func (s *server) publish(params json.RawMessage) {
 	var p struct {
-		URI         string `json:"uri"`
-		Diagnostics []struct {
-			Range    lspRange `json:"range"`
-			Severity int      `json:"severity"`
-			Message  string   `json:"message"`
-			Source   string   `json:"source"`
-		} `json:"diagnostics"`
+		URI         string            `json:"uri"`
+		Diagnostics []json.RawMessage `json:"diagnostics"`
 	}
 	if json.Unmarshal(params, &p) != nil {
 		return
 	}
-	var raw struct {
-		Diagnostics []json.RawMessage `json:"diagnostics"`
+	path := uriPath(p.URI)
+	kept, rich := s.l.keepFileDiagnostics(s, path, p.Diagnostics)
+	if rich {
+		return
 	}
-	json.Unmarshal(params, &raw)
 	s.l.mu.Lock()
-	s.l.diags[uriPath(p.URI)] = raw.Diagnostics
-	d := s.l.byPath[uriPath(p.URI)]
+	d := s.l.byPath[path]
 	var text []byte
 	var version int64
 	if d != nil {
@@ -467,28 +455,7 @@ func (s *server) publish(params json.RawMessage) {
 	if d == nil || text == nil {
 		return
 	}
-	ds := make([]rhunext.Diagnostic, 0, len(p.Diagnostics))
-	for _, x := range p.Diagnostics {
-		sev := rhunext.SevError
-		switch x.Severity {
-		case 2:
-			sev = rhunext.SevWarning
-		case 3:
-			sev = rhunext.SevInfo
-		case 4:
-			sev = rhunext.SevHint
-		}
-		msg := x.Message
-		if i := strings.IndexByte(msg, '\n'); i > 0 {
-			msg = msg[:i]
-		}
-		if x.Source != "" {
-			msg = x.Source + ": " + msg
-		}
-		ds = append(ds, rhunext.Diagnostic{Range: rhunext.Range{Start: rhunPos(text, x.Range.Start), End: rhunPos(text, x.Range.End)},
-			Severity: sev, Message: msg})
-	}
-	if err := s.l.ext.Diagnostics(d.id, version, ds); err != nil {
+	if err := s.l.ext.Diagnostics(d.id, version, plainDiagnostics(kept, text)); err != nil {
 		// stale: the user typed meanwhile; the server will publish again after the didChange
 		s.l.ext.Logf("diagnostics: %v", err)
 	}
@@ -632,6 +599,129 @@ func unmark(s string) string {
 	return text
 }
 
+// has is whether rhun agreed a feature (false before the session, as in the tests)
+func (l *lsp) has(feature string) bool { return l.ext != nil && l.ext.Has(feature) }
+
+// completionCapabilities is the client's completion capabilities: snippets only when rhun
+// agreed native snippet fields, and the item properties complete-items carries
+func (l *lsp) completionCapabilities() map[string]any {
+	formats := []string{"plaintext", "markdown"}
+	if l.has(featureMarkdown) {
+		formats = []string{"markdown", "plaintext"}
+	}
+	item := map[string]any{"snippetSupport": l.has(rhunext.FeatureSnippets), "documentationFormat": formats}
+	caps := map[string]any{"contextSupport": true, "completionItem": item}
+	if l.has(rhunext.FeatureCompleteItems) {
+		item["insertReplaceSupport"] = true
+		item["commitCharactersSupport"] = true
+		item["labelDetailsSupport"] = true
+		item["deprecatedSupport"] = true
+		item["preselectSupport"] = true
+		item["tagSupport"] = map[string]any{"valueSet": []int{1}}
+		item["insertTextModeSupport"] = map[string]any{"valueSet": []int{1, 2}}
+		item["resolveSupport"] = map[string]any{"properties": []string{"documentation", "detail", "additionalTextEdits"}}
+		caps["completionList"] = map[string]any{"itemDefaults": []string{"commitCharacters", "editRange", "insertTextFormat", "insertTextMode", "data"}}
+	}
+	return caps
+}
+
+// clientCapabilities are what the client offers the server: the services of the features rhun
+// agreed, each with dynamic registration. Positions stay UTF-16: the extension converts columns
+// in that encoding everywhere, so it offers no other.
+func (l *lsp) clientCapabilities(watch bool) map[string]any {
+	formats := []string{"plaintext", "markdown"}
+	if l.has(featureMarkdown) {
+		formats = []string{"markdown", "plaintext"}
+	}
+	diagnostics := map[string]any{"versionSupport": true, "dataSupport": true}
+	if l.has(rhunext.FeatureFileDiagnostics) {
+		diagnostics["relatedInformation"] = true
+		diagnostics["tagSupport"] = map[string]any{"valueSet": []int{1, 2}}
+		diagnostics["codeDescriptionSupport"] = true
+	}
+	rename := map[string]any{"prepareSupport": false}
+	if l.has(rhunext.FeaturePrepareRename) {
+		rename = map[string]any{"prepareSupport": true, "prepareSupportDefaultBehavior": 1}
+	}
+	text := map[string]any{
+		"synchronization":    map[string]any{"didSave": true},
+		"publishDiagnostics": diagnostics,
+		"hover":              map[string]any{"contentFormat": formats},
+		"definition":         map[string]any{"linkSupport": true},
+		"references":         map[string]any{},
+		"documentSymbol":     map[string]any{"hierarchicalDocumentSymbolSupport": true},
+		"codeAction": map[string]any{"isPreferredSupport": true, "disabledSupport": true,
+			"dataSupport": true, "resolveSupport": map[string]any{"properties": []string{"edit", "command"}},
+			"codeActionLiteralSupport": map[string]any{"codeActionKind": map[string]any{"valueSet": []string{
+				"", "quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.move", "refactor.rewrite",
+				"source", "source.organizeImports", "source.fixAll"}}}},
+		"rename":     rename,
+		"formatting": map[string]any{},
+		"completion": l.completionCapabilities(),
+		"signatureHelp": map[string]any{"contextSupport": true, "signatureInformation": map[string]any{
+			"documentationFormat":  formats,
+			"parameterInformation": map[string]any{"labelOffsetSupport": true}, "activeParameterSupport": true}},
+	}
+	if l.has(rhunext.FeatureNavigation) {
+		for _, name := range []string{"declaration", "typeDefinition", "implementation"} {
+			text[name] = map[string]any{"linkSupport": true}
+		}
+	}
+	if l.has(rhunext.FeatureSelectionRanges) {
+		text["selectionRange"] = map[string]any{}
+	}
+	if l.has(rhunext.FeatureHierarchy) {
+		text["callHierarchy"] = map[string]any{}
+		text["typeHierarchy"] = map[string]any{}
+	}
+	if l.has(rhunext.FeaturePartialFormat) {
+		text["rangeFormatting"] = map[string]any{}
+		text["onTypeFormatting"] = map[string]any{}
+	}
+	if l.has(rhunext.FeatureDocumentLinks) {
+		text["documentLink"] = map[string]any{"tooltipSupport": true}
+	}
+	if l.has(rhunext.FeatureFileDiagnostics) {
+		text["diagnostic"] = map[string]any{"relatedDocumentSupport": false}
+	}
+	workspace := map[string]any{"configuration": true, "workspaceFolders": true, "applyEdit": true, "executeCommand": map[string]any{},
+		"workspaceEdit": workspaceEditCapabilities(l.editCaps())}
+	if l.editCaps().ops {
+		workspace["fileOperations"] = map[string]any{"dynamicRegistration": true, "didCreate": true, "didRename": true, "didDelete": true}
+	}
+	if l.has(rhunext.FeatureLinkedEditing) {
+		text["linkedEditingRange"] = map[string]any{}
+	}
+	if l.has(rhunext.FeatureWorkspaceSymbols) {
+		kinds := make([]int, len(symbolKinds))
+		for i := range kinds {
+			kinds[i] = i + 1
+		}
+		workspace["symbol"] = map[string]any{"symbolKind": map[string]any{"valueSet": kinds},
+			"tagSupport": map[string]any{"valueSet": []int{1}}, "resolveSupport": map[string]any{"properties": []string{"location.range"}}}
+	}
+	if l.has(rhunext.FeatureFileDiagnostics) {
+		workspace["diagnostics"] = map[string]any{"refreshSupport": true}
+	}
+	if watch {
+		workspace["didChangeWatchedFiles"] = map[string]any{"dynamicRegistration": true, "relativePatternSupport": true}
+	}
+	l.presentationCaps(text) // folding, semantic tokens, hints, lens, highlights, colors, inline (present.go)
+	caps := map[string]any{"textDocument": text, "workspace": workspace,
+		"window":  map[string]any{"workDoneProgress": true, "showDocument": map[string]any{"support": true}},
+		"general": map[string]any{"positionEncodings": []string{"utf-16"}}}
+	text["synchronization"].(map[string]any)["dynamicRegistration"] = true
+	for _, info := range capabilityFields {
+		section, name, _ := strings.Cut(info.client, ".")
+		if group, ok := caps[section].(map[string]any); ok {
+			if options, ok := group[name].(map[string]any); ok {
+				options["dynamicRegistration"] = true
+			}
+		}
+	}
+	return caps
+}
+
 func (l *lsp) configError(err error) {
 	l.ext.Logf("configuration: %v", err)
 	go l.ext.Toast("Language server configuration: " + err.Error())
@@ -647,7 +737,24 @@ func argOr(ev rhunext.Event, i int) string {
 func main() {
 	features := []string{rhunext.FeatureComplete, rhunext.FeatureSignature, rhunext.FeatureDefinition,
 		rhunext.FeatureReferences, rhunext.FeatureSymbols, rhunext.FeatureActions, rhunext.FeatureRename, rhunext.FeatureFormat, rhunext.FeatureSaveActions, rhunext.FeatureWorkspaceWatch,
+		// protocol 1.1: native snippet fields, completion items, overloads, streaming and narrowing,
+		// declaration/type definition/implementation, prepare-rename, range and on-type formatting,
+		// code actions with kinds and resolve,
+		rhunext.FeatureSnippets, rhunext.FeatureSnippetVariants, rhunext.FeatureSnippetTransforms,
+		rhunext.FeatureCompleteItems, rhunext.FeatureSignatureList, rhunext.FeatureQueryStream, rhunext.FeatureProviderScope,
+		rhunext.FeatureNavigation, rhunext.FeaturePrepareRename, rhunext.FeaturePartialFormat, rhunext.FeatureCodeActions,
+		// the hover card, Expand Selection, hierarchies, Go to Symbol in Project, links, the
+		// Problems store, and Markdown documentation where rhun renders it
+		rhunext.FeatureHoverQuery, rhunext.FeatureSelectionRanges, rhunext.FeatureHierarchy, rhunext.FeatureWorkspaceSymbols,
+		rhunext.FeatureDocumentLinks, rhunext.FeatureFileDiagnostics, featureMarkdown,
+		// commands invoked with a body: a code action's server command is a command reference
+		rhunext.FeatureCommandArgs,
+		// workspace edits as transactions, file operations, showDocument, linked editing
 		rhunext.FeatureWorkspaceEdits, rhunext.FeatureFileOperations, rhunext.FeatureReveal, rhunext.FeatureLinkedEditing,
+		// the window's folders: the servers' workspace folders
+		rhunext.FeatureWorkspaceFolders,
+		// editor presentation: folding, semantic tokens, inlay hints, code lens, highlights,
+		// colors (present.go)
 		rhunext.FeatureFoldingRanges, rhunext.FeatureSemanticTokens, rhunext.FeatureInlayHints, rhunext.FeatureCodeLens,
 		rhunext.FeatureHighlights, rhunext.FeatureColors}
 	l := &lsp{}

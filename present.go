@@ -51,21 +51,29 @@ func (l *lsp) currentSoon(id rhunext.Doc, version int64, wait time.Duration) (*d
 	}
 }
 
-// capabilityAliases are requests a capability brings with it
-var capabilityAliases = map[string]string{
-	"textDocument/semanticTokens/full": "textDocument/semanticTokens", "textDocument/semanticTokens/full/delta": "textDocument/semanticTokens",
-	"textDocument/semanticTokens/range": "textDocument/semanticTokens", "codeLens/resolve": "textDocument/codeLens",
-	"textDocument/colorPresentation": "textDocument/documentColor",
-}
-
 func init() {
-	for method, field := range map[string]string{
-		"textDocument/foldingRange": "foldingRangeProvider", "textDocument/semanticTokens": "semanticTokensProvider",
-		"textDocument/inlayHint": "inlayHintProvider", "textDocument/codeLens": "codeLensProvider",
-		"textDocument/documentHighlight": "documentHighlightProvider", "textDocument/documentColor": "colorProvider",
+	for method, info := range map[string]capabilityInfo{
+		"textDocument/foldingRange": {"foldingRangeProvider", "textDocument.foldingRange", false}, "textDocument/semanticTokens": {"semanticTokensProvider", "textDocument.semanticTokens", false},
+		"textDocument/inlayHint": {"inlayHintProvider", "textDocument.inlayHint", false}, "textDocument/codeLens": {"codeLensProvider", "textDocument.codeLens", true},
+		"textDocument/documentHighlight": {"documentHighlightProvider", "textDocument.documentHighlight", false}, "textDocument/documentColor": {"colorProvider", "textDocument.colorProvider", false},
+		"textDocument/inlineCompletion": {"inlineCompletionProvider", "textDocument.inlineCompletion", false},
 	} {
-		capabilityFields[method] = field
+		capabilityFields[method] = info
 	}
+	// a capability's own requests
+	for method, base := range map[string]string{"textDocument/semanticTokens/full": "textDocument/semanticTokens",
+		"textDocument/semanticTokens/full/delta": "textDocument/semanticTokens", "textDocument/semanticTokens/range": "textDocument/semanticTokens",
+		"textDocument/colorPresentation": "textDocument/documentColor"} {
+		dependent[method] = struct {
+			base   string
+			option bool
+		}{base, false}
+	}
+	dependent["codeLens/resolve"] = struct {
+		base   string
+		option bool
+	}{"textDocument/codeLens", true}
+	providerOption["textDocument/codeLens"] = "resolveProvider"
 }
 
 // LSP's standard token types and modifiers, which the client says it understands

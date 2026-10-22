@@ -1,0 +1,12 @@
+ext=lsp state=running
+folder=1 name=proj path=WORK/proj flags=3
+folder=2 name=lib path=WORK/lib flags=2
+card=shown kind=invoked line=3 col=5 focused=0 waiting=0 range=0
+section ext rhun-editor/lsp: folders: proj lib; root: proj; changed: none
+id=3
+folder=1 name=proj path=WORK/proj flags=3
+folder=2 name=lib path=WORK/lib flags=2
+folder=3 name=docs path=WORK/docs flags=2
+ext=lsp state=running
+card=shown kind=invoked line=3 col=5 focused=0 waiting=0 range=0
+section ext rhun-editor/lsp: folders: proj lib docs; root: proj; changed: none

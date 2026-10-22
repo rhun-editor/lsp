@@ -176,6 +176,13 @@ func (l *lsp) synchronizeDeltaLocked(d *document, s *server, changes []map[strin
 		}
 		l.mu.Unlock()
 	}
+	for _, frame := range frames {
+		if frame.method != "textDocument/didSave" {
+			// the text changed for the server: ask for its diagnostics when it gives them on request
+			defer l.schedulePull(d, s)
+			break
+		}
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	s.capMu.RLock()
@@ -321,6 +328,7 @@ func (l *lsp) documentEvent(ev rhunext.Event) {
 	case "closed":
 		delete(l.docs, d.id)
 		delete(l.byPath, d.path)
+		l.forgetPull(d)
 		closeServer := d.syncedServer
 		d.opened = false
 		d.pendingSave = false

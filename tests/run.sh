@@ -50,6 +50,22 @@ printf 'package main\n\n// TODO first\nfunc main() {\n\tERR := 1\n\t_ = ERR\n}\n
 run tests/lang.txt | sed -e 's/pid=[1-9][0-9]*/pid=PID/' -e "s|/private$work|WORK|g" -e "s|$work|WORK|g" > "$work/out.txt"
 check lang
 
+# protocol 1.1: every server but the fake turned off, so the scope does not depend on what this
+# machine has installed; formatting as you type on
+printf 'package main\n\n// TODO first\nfunc main() {\n\tERR := 1\n\t_ = ERR\n}\n' > "$work/proj/main.go"
+printf 'package main\n\nfunc f() {\n    x := 1\n    _ = x\n}\n' > "$work/proj/fmt.go"
+printf '[servers]\n' > "$state/lsp.ini"
+for lang in Rust TypeScript JavaScript Python C C++ Zig Lua Ruby Dart Kotlin Swift OCaml Haskell Elixir Nix Terraform YAML JSON HTML CSS; do
+    printf '%s = off\n' "$lang" >> "$state/lsp.ini"
+done
+cp "$work/config/rhun/config" "$work/config.saved"
+printf '\n[editor]\nformat_on_type = yes\n' >> "$work/config/rhun/config"
+printf 'package main\n\nfunc leaf() {}\n\nfunc caller() {\n\tleaf()\n\tleaf()\n}\n' > "$work/proj/calls.go"
+run tests/lang11.txt | sed -e 's/pid=[1-9][0-9]*/pid=PID/' -e "s|/private$work|WORK|g" -e "s|$work|WORK|g" > "$work/out.txt"
+check lang11
+cp "$work/config.saved" "$work/config/rhun/config"
+rm "$state/lsp.ini"
+
 # Saving must negotiate through the real SDK, format first and then write the resulting bytes.
 printf '\n[files]\nformat_on_save = true\n' >> "$work/config/rhun/config"
 run tests/save.txt > "$work/out.txt"
@@ -65,6 +81,15 @@ printf '[servers]\nHTML = gopls\n' > "$state/lsp.ini"
 run tests/linked.txt > "$work/out.txt"
 check linked
 rm "$state/lsp.ini"
+
+# workspace folders: two from the command line, a third added
+mkdir -p "$work/lib" "$work/docs"
+printf 'package main\n\n// FOLDERS\n' > "$work/proj/folders.go"
+sed -e "s|proj/|$work/proj/|" -e "s|WORKDIR/|$work/|" tests/folders.txt > "$work/script.txt"
+PATH="$work/bin:$PATH" HOME=$work XDG_CONFIG_HOME=$work/config XDG_STATE_HOME=$work/state \
+    "$RHUN" "$work/proj" "$work/lib" --headless 1000x600 --scale 1 --extensions "$work/exts" --script "$work/script.txt" 2>&1 |
+    sed -e 's/pid=[1-9][0-9]*/pid=PID/' -e "s|/private$work|WORK|g" -e "s|$work|WORK|g" > "$work/out.txt"
+check folders
 
 python3 tests/callbacks.py "$RHUN"
 

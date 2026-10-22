@@ -1,9 +1,9 @@
 ext=lsp state=running
 tabs=1 active=main.go line=5 col=5 sel=0 dirty=0 lang=Go focus=0 theme=rhun-dark
-choose=Go to reference
-field=
-> main.go:5  ERR := 1
-  main.go:6  _ = ERR
+set=1/1 kind=references cur=-1 title=2 references to ERR
+row 0 y=372 d=0 open id=fWORK/proj/main.go label=main.go badge=2 icon=3
+row 1 y=400 d=1 leaf id=WORK/proj/main.go5:2-5:5 label=5:2  ERR := 1
+row 2 y=428 d=1 leaf id=WORK/proj/main.go6:6-6:9 label=6:6  _ = ERR
 choose=Go to symbol
 field=
 > main
@@ -13,6 +13,7 @@ choose=Code action
 field=
 > Rename ERR to Err
   Add a comment
+  Not now
 package main
 
 // TODO first
@@ -25,6 +26,7 @@ func main() {
 choose=Code action
 field=
 > Add a comment
+  Not now
 // added by a command
 package main
 
@@ -44,8 +46,8 @@ field=
 > Apply
   Apply, and let Language Server change project files from now on
   Preview changes
-  M  WORK/proj/main.go    2 edits
-  M  WORK/proj/other.go    1 edit
+  M  main.go    2 edits
+  M  other.go    1 edit
 toast=Applied 'Rename to app' to 2 files
 tabs=*main.go
 // added by a command
