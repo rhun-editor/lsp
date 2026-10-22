@@ -95,7 +95,7 @@ func main() {
 				"workspace":          map[string]any{"workspaceFolders": map[string]any{"supported": true, "changeNotifications": true}},
 				"referencesProvider": true, "documentSymbolProvider": true, "codeActionProvider": true,
 				"renameProvider": map[string]any{"prepareProvider": true}, "declarationProvider": true, "implementationProvider": true,
-				"documentFormattingProvider": true, "documentRangeFormattingProvider": true, "linkedEditingRangeProvider": true,
+				"documentFormattingProvider": true, "documentRangeFormattingProvider": true, "linkedEditingRangeProvider": true, "codeLensProvider": map[string]any{}, "inlineCompletionProvider": true,
 				"documentOnTypeFormattingProvider": map[string]any{"firstTriggerCharacter": "\n", "moreTriggerCharacter": []string{"}", "@"}},
 				"executeCommandProvider":           map[string]any{"commands": []string{"fake.comment"}}, "callHierarchyProvider": true,
 				"completionProvider": map[string]any{"triggerCharacters": []string{"."}}, "signatureHelpProvider": map[string]any{"triggerCharacters": []string{"(", ","}}}})
@@ -445,6 +445,37 @@ func main() {
 				"command": map[string]any{"title": "Add a comment", "command": "fake.comment", "arguments": []string{p.TextDocument.URI}}})
 			actions = append(actions, map[string]any{"title": "Not now", "kind": "refactor", "disabled": map[string]any{"reason": "no"}})
 			reply(msg.ID, actions)
+		case "textDocument/codeLens":
+			// a lens running fake.comment over each line that says LENS
+			var p struct {
+				TextDocument struct {
+					URI string `json:"uri"`
+				} `json:"textDocument"`
+			}
+			json.Unmarshal(msg.Params, &p)
+			lenses := []map[string]any{}
+			for i, line := range strings.Split(string(docs[p.TextDocument.URI]), "\n") {
+				if strings.Contains(line, "LENS") {
+					lenses = append(lenses, map[string]any{"range": rng{position{i, 0}, position{i, 0}},
+						"command": map[string]any{"title": "Add a comment", "command": "fake.comment", "arguments": []string{p.TextDocument.URI}}})
+				}
+			}
+			reply(msg.ID, lenses)
+		case "textDocument/inlineCompletion":
+			// after "//" at the end of a line: a snippet's text (placeholders and a brace)
+			var p struct {
+				TextDocument struct {
+					URI string `json:"uri"`
+				} `json:"textDocument"`
+				Position position `json:"position"`
+			}
+			json.Unmarshal(msg.Params, &p)
+			lines := strings.Split(string(docs[p.TextDocument.URI]), "\n")
+			if p.Position.Line < len(lines) && strings.HasSuffix(lines[p.Position.Line], "//") {
+				reply(msg.ID, map[string]any{"items": []map[string]any{{"insertText": map[string]any{"kind": "snippet", "value": " more ${1:x} }$0"}}}})
+			} else {
+				reply(msg.ID, map[string]any{"items": []any{}})
+			}
 		case "workspace/executeCommand":
 			var p struct {
 				Command   string   `json:"command"`

@@ -36,3 +36,16 @@ func TestLegendNames(t *testing.T) {
 		t.Fatal("channel")
 	}
 }
+
+func TestInlineText(t *testing.T) {
+	for in, want := range map[string]string{
+		`"plain"`: "plain",
+		`{"kind":"snippet","value":"f(${1:a}, $2) {\n\t$0\n}"}`: "f(a, ) {\n\t\n}",
+		`{"kind":"snippet","value":"\\$x \\} ${3}"}`:            "$x } ",
+		`{"kind":"other","value":"${1:x}"}`:                     "${1:x}",
+	} {
+		if got := inlineText([]byte(in)); got != want {
+			t.Errorf("inlineText(%s) = %q, want %q", in, got, want)
+		}
+	}
+}

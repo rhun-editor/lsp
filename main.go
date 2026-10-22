@@ -754,9 +754,9 @@ func main() {
 		// the window's folders: the servers' workspace folders
 		rhunext.FeatureWorkspaceFolders,
 		// editor presentation: folding, semantic tokens, inlay hints, code lens, highlights,
-		// colors (present.go)
+		// colors and inline completion (present.go)
 		rhunext.FeatureFoldingRanges, rhunext.FeatureSemanticTokens, rhunext.FeatureInlayHints, rhunext.FeatureCodeLens,
-		rhunext.FeatureHighlights, rhunext.FeatureColors}
+		rhunext.FeatureHighlights, rhunext.FeatureColors, rhunext.FeatureInlineComplete}
 	l := &lsp{}
 	err := rhunext.RunWith(features, l)
 	l.shutdown()

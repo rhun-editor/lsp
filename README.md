@@ -117,9 +117,11 @@ With rhun 0.18 (protocol 1.1) the server's folding ranges replace rhun's indenta
 semantic tokens color the code by meaning (the server's legend is registered with rhun; deltas are
 applied here and rhun gets the whole array in byte columns), its inlay hints show inside lines
 (a part with a location is a place to go; the hint's text edits are made by a double click), its
-code lenses show above lines (titles only: their commands are the server's own client commands),
-the places of the symbol under the cursor are marked, and color swatches come from
-`textDocument/documentColor`, a new color written through `textDocument/colorPresentation`.
+code lenses show above lines (a click runs the lens's command through `workspace/executeCommand`,
+as a code action's command runs), the places of the symbol under the cursor are marked, color
+swatches come from `textDocument/documentColor`, a new color written through
+`textDocument/colorPresentation`, and `textDocument/inlineCompletion` shows as ghost text after the
+cursor (Tab takes it; a snippet's placeholders become their text).
 
 ## Source actions before saving
 

@@ -29,6 +29,7 @@ const (
 	waitLens       = 8 * time.Second
 	waitHighlights = 4 * time.Second
 	waitColors     = 8 * time.Second
+	waitInline     = 4 * time.Second
 )
 
 // currentSoon is l.current, waiting while the document is still reaching its server (rhun asks
@@ -109,6 +110,9 @@ func (l *lsp) presentationCaps(text map[string]any) {
 	}
 	if l.ext.Has(rhunext.FeatureColors) {
 		text["colorProvider"] = map[string]any{"dynamicRegistration": true}
+	}
+	if l.ext.Has(rhunext.FeatureInlineComplete) {
+		text["inlineCompletion"] = map[string]any{}
 	}
 }
 
@@ -470,11 +474,18 @@ func markupText(raw json.RawMessage) string {
 // ---- code lens
 
 type lspLens struct {
-	Range   lspRange `json:"range"`
-	Command *struct {
-		Title string `json:"title"`
-	} `json:"command"`
-	Data json.RawMessage `json:"data"`
+	Range   lspRange        `json:"range"`
+	Command *lspCommand     `json:"command,omitempty"`
+	Data    json.RawMessage `json:"data,omitempty"`
+}
+
+// lensRef is the command reference that runs a lens's (or an inline item's) server command
+// (codeactions.go's exec, feature command-args), nil without one
+func (l *lsp) lensRef(s *server, c *lspCommand) *rhunext.CommandRef {
+	if c == nil || c.Command == "" {
+		return nil
+	}
+	return l.execRef(s, *c)
 }
 
 func (l *lsp) CodeLenses(ext *rhunext.Ext, req rhunext.LinesRequest) []rhunext.CodeLens {
@@ -502,11 +513,12 @@ func (l *lsp) CodeLenses(ext *rhunext.Ext, req rhunext.LinesRequest) []rhunext.C
 				}
 			}
 		}
-		title := ""
+		lens := rhunext.CodeLens{Line: rhunPos(text, ln.Range.Start).Line}
 		if ln.Command != nil {
-			title = ln.Command.Title
+			lens.Title = ln.Command.Title
+			lens.Command = l.lensRef(s, ln.Command)
 		}
-		out = append(out, rhunext.CodeLens{Line: rhunPos(text, ln.Range.Start).Line, Title: title})
+		out = append(out, lens)
 	}
 	return out
 }
@@ -603,4 +615,118 @@ func (l *lsp) ColorEdit(ext *rhunext.Ext, req rhunext.ColorEditRequest) (rhunext
 	}
 	return rhunext.WorkspaceEdit{Files: []rhunext.FileEdit{{Target: rhunext.Target{Doc: req.Doc}, Version: req.Version,
 		Edits: []rhunext.TextEdit{edit}}}}, nil
+}
+
+// ---- inline completion
+
+type lspInlineItem struct {
+	InsertText json.RawMessage `json:"insertText"`
+	Range      *lspRange       `json:"range,omitempty"`
+	Command    *lspCommand     `json:"command,omitempty"`
+}
+
+// inlineText is an item's insertText: a string, or a StringValue whose snippet syntax is taken
+// out ($1, ${1}, ${1:text} become text; \$ a dollar)
+func inlineText(raw json.RawMessage) string {
+	var str string
+	if json.Unmarshal(raw, &str) == nil {
+		return str
+	}
+	var sv struct {
+		Kind  string `json:"kind"`
+		Value string `json:"value"`
+	}
+	if json.Unmarshal(raw, &sv) != nil {
+		return ""
+	}
+	if sv.Kind != "snippet" {
+		return sv.Value
+	}
+	return snippetPlain(sv.Value)
+}
+
+func snippetPlain(v string) string {
+	var b strings.Builder
+	open := 0 // placeholders whose text is being copied
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case c == '\\' && i+1 < len(v) && strings.IndexByte("$}\\", v[i+1]) >= 0:
+			i++
+			b.WriteByte(v[i])
+		case c == '$' && i+1 < len(v) && v[i+1] >= '0' && v[i+1] <= '9':
+			for i+1 < len(v) && v[i+1] >= '0' && v[i+1] <= '9' {
+				i++
+			}
+		case c == '$' && i+1 < len(v) && v[i+1] == '{':
+			j := i + 2
+			for j < len(v) && v[j] >= '0' && v[j] <= '9' {
+				j++
+			}
+			if j == i+2 || j >= len(v) {
+				b.WriteByte(c)
+				continue
+			}
+			if v[j] == ':' {
+				i = j // the placeholder's text follows; its closing brace is dropped below
+				open++
+				continue
+			}
+			if v[j] == '}' {
+				i = j
+				continue
+			}
+			b.WriteByte(c)
+		case c == '}' && open > 0:
+			open-- // a placeholder's end
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+func (l *lsp) InlineComplete(ext *rhunext.Ext, req rhunext.InlineRequest) []rhunext.InlineItem {
+	d, text, s := l.current(req.Doc, req.Version)
+	if d == nil || !s.supports("textDocument/inlineCompletion", selectorFor(d.origin)) {
+		return nil
+	}
+	params := docParams(d, text, req.At)
+	kind := 2 // automatic
+	if req.Kind == "invoked" {
+		kind = 1
+	}
+	params["context"] = map[string]any{"triggerKind": kind}
+	res, err := askFor(s, d, waitInline, "textDocument/inlineCompletion", params)
+	if err != nil {
+		return nil
+	}
+	var items []lspInlineItem
+	if json.Unmarshal(res, &items) != nil {
+		var list struct {
+			Items []lspInlineItem `json:"items"`
+		}
+		if json.Unmarshal(res, &list) != nil {
+			return nil
+		}
+		items = list.Items
+	}
+	out := make([]rhunext.InlineItem, 0, len(items))
+	for _, it := range items {
+		t := inlineText(it.InsertText)
+		if t == "" {
+			continue
+		}
+		r := rhunext.Range{Start: req.At, End: req.At}
+		if it.Range != nil {
+			r = rhunRange(text, *it.Range)
+		}
+		item := rhunext.InlineItem{Range: r, Text: t}
+		item.Command = l.lensRef(s, it.Command)
+		out = append(out, item)
+		if len(out) == rhunext.MaxInlineItems {
+			break
+		}
+	}
+	return out
 }
