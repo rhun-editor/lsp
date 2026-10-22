@@ -358,8 +358,9 @@ func validResult(s string) bool {
 }
 
 // byteTokens is LSP's relative token array (UTF-16 columns and lengths) in byte columns, for text
-func byteTokens(text []byte, data []uint32) []uint32 {
-	out := make([]uint32, 0, len(data))
+// (rhun's ints are 64 bits: LSP's 32 modifier bits fit)
+func byteTokens(text []byte, data []uint32) []uint64 {
+	out := make([]uint64, 0, len(data))
 	lines := bytes.Split(text, []byte{'\n'})
 	line, ch := 0, 0            // the server's absolute position
 	prevLine, prevByte := -1, 0 // the last token's in bytes
@@ -387,7 +388,7 @@ func byteTokens(text []byte, data []uint32) []uint32 {
 		} else {
 			bdc = start - prevByte
 		}
-		out = append(out, uint32(bdl), uint32(bdc), uint32(end-start), data[i+3], data[i+4])
+		out = append(out, uint64(bdl), uint64(bdc), uint64(end-start), uint64(data[i+3]), uint64(data[i+4]))
 		prevLine, prevByte = line, start
 	}
 	return out
