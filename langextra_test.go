@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -283,12 +284,17 @@ func TestDocumentLinks(t *testing.T) {
 }
 
 func TestLinkTargets(t *testing.T) {
+	dir := "/a" // absolute here as it is; on Windows a path needs a drive
+	if runtime.GOOS == "windows" {
+		dir = "C:/a"
+	}
+	u := "file:///" + strings.TrimPrefix(dir, "/")
 	for in, want := range map[string]string{
 		"https://example.org/a?b#c": "https://example.org/a?b#c",
-		"file:///a/b.go":            "/a/b.go",
-		"file:///a/b.go#L5":         "/a/b.go:5",
-		"file:///a/b.go#10:2":       "/a/b.go:10:2",
-		"file:///a/b%20c.go":        "/a/b c.go",
+		u + "/b.go":                 dir + "/b.go",
+		u + "/b.go#L5":              dir + "/b.go:5",
+		u + "/b.go#10:2":            dir + "/b.go:10:2",
+		u + "/b%20c.go":             dir + "/b c.go",
 		"mailto:x@example.org":      "",
 		"relative/path":             "",
 	} {

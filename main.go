@@ -547,7 +547,9 @@ func uriPath(uri string) string {
 	if u.Host != "" && u.Host != "localhost" {
 		path = "//" + u.Host + path
 	}
-	return filepath.FromSlash(path)
+	// as rhun writes paths (C:/w/main.go on Windows, never backslashes): the keys of byPath and
+	// diags are the paths of opened documents, so a server's URI must come back in the same form
+	return path
 }
 
 // hoverText turns MarkupContent, MarkedString or their arrays into plain-ish text.

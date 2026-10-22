@@ -8,6 +8,7 @@ import (
 )
 
 func TestSaveWorkspaceEditUsesSynchronizedLSPVersionAndOneTarget(t *testing.T) {
+	posixFixtures(t)
 	l := &lsp{}
 	q := &documentQuery{id: 7, version: 99, lspVersion: 3, path: "/project/main.go", text: []byte("a😀b\n")}
 	edit := `{"range":{"start":{"line":0,"character":1},"end":{"line":0,"character":3}},"newText":"x"}`
@@ -59,6 +60,7 @@ func TestSourceActionDecodeLimitsBeforeBuildingActionSlice(t *testing.T) {
 }
 
 func TestCommandWorkspaceEditVersionsAndMultipleFileSnapshots(t *testing.T) {
+	posixFixtures(t)
 	l, s, d, _ := syncHarness(t, synchronizationOptions{openClose: true, change: 2})
 	if !l.ensureSynchronized(d, s) {
 		t.Fatal("sync failed")
@@ -87,6 +89,7 @@ func TestCommandWorkspaceEditVersionsAndMultipleFileSnapshots(t *testing.T) {
 }
 
 func TestDeferredCommandEditKeepsPreResolveForeignSnapshot(t *testing.T) {
+	posixFixtures(t)
 	l, s, d, _ := syncHarness(t, synchronizationOptions{openClose: true, change: 2})
 	if !l.ensureSynchronized(d, s) {
 		t.Fatal("sync failed")

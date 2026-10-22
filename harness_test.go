@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -292,12 +293,23 @@ type harness struct {
 
 const harnessPath = "/project/main.go"
 
+// posixFixtures skips a test whose fixtures are POSIX paths (/project/main.go, file:///work/app) on
+// Windows, where they are not absolute: rhun writes C:/... there, and the extension refuses a
+// relative path. uriPath's Windows forms are covered by TestURIPathsAsRhunWritesThem.
+func posixFixtures(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX path fixtures")
+	}
+}
+
 // newHarness starts the extension with the features agreed, one Go document with text at
 // version 1 synchronized to a server with the capabilities (an initialize result's
 // "capabilities" object) answering through handle
 func newHarness(t *testing.T, features []string, caps, text string,
 	handle func(f *fakeLSP, method string, id, params json.RawMessage) (any, bool)) *harness {
 	t.Helper()
+	posixFixtures(t)
 	hostR, hostW := io.Pipe()
 	extR, extW := io.Pipe()
 	l := &lsp{settings: &settingsConfig{}, servers: map[string]*server{}, project: "/project", config: map[string][]string{}}

@@ -251,3 +251,29 @@ func TestRetiredDocumentSendCannotSynchronizeReplacement(t *testing.T) {
 		t.Fatal("old send replaced new state")
 	}
 }
+
+func TestURIPathsAsRhunWritesThem(t *testing.T) {
+	// forward slashes on every system, so a server's URI finds the document rhun opened by its path
+	for uri, want := range map[string]string{
+		"file:///C:/w/main.go":     "C:/w/main.go",
+		"file:///c%3A/w/a%20b.go":  "c:/w/a b.go",
+		"file:///home/u/x.go":      "/home/u/x.go",
+		"file://server/share/x.go": "//server/share/x.go",
+		"file://localhost/x/y.go":  "/x/y.go",
+	} {
+		if got := uriPath(uri); got != want {
+			t.Errorf("uriPath(%q) = %q, want %q", uri, got, want)
+		}
+	}
+	for _, path := range []string{"C:/w/main.go", "/home/u/a b.go", "//server/share/x.go"} {
+		if got := uriPath(fileURI(path)); got != path {
+			t.Errorf("uriPath(fileURI(%q)) = %q", path, got)
+		}
+	}
+	// the document rhun opened as C:/w/main.go, found by the server's URI for it
+	d := &document{id: 1, path: "C:/w/main.go"}
+	byPath := map[string]*document{d.path: d}
+	if byPath[uriPath("file:///C:/w/main.go")] != d {
+		t.Fatal("the document was not found by the server's URI")
+	}
+}

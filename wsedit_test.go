@@ -32,7 +32,7 @@ func convertHarness(t *testing.T) (*lsp, *server, *documentQuery, string) {
 	write("crlf.go", "a😀b\r\nline two\r\n")
 	write("a.go", "package a\n\nfunc F() {}\n")
 	write("gone.go", "package gone\n")
-	d := &document{id: 1, version: 7, lspVer: 3, lang: "Go", path: filepath.Join(dir, "main.go"), text: []byte("package main\n"), server: s, syncedServer: s, syncedVersion: 7}
+	d := &document{id: 1, version: 7, lspVer: 3, lang: "Go", path: filepath.ToSlash(filepath.Join(dir, "main.go")), text: []byte("package main\n"), server: s, syncedServer: s, syncedVersion: 7}
 	l.docs = map[rhunext.Doc]*document{1: d}
 	l.byPath = map[string]*document{d.path: d}
 	q := &documentQuery{origin: d, id: 1, version: 7, lspVersion: 3, path: d.path, lang: "Go", text: d.text, server: s}
@@ -53,7 +53,7 @@ func hashOf(t *testing.T, path string) string {
 
 func TestConvertEditTransactions(t *testing.T) {
 	l, s, q, dir := convertHarness(t)
-	p := func(name string) string { return filepath.Join(dir, name) }
+	p := func(name string) string { return filepath.ToSlash(filepath.Join(dir, name)) } // as rhun writes paths
 	u := func(name string) string { return fileURI(p(name)) }
 	raw := `{"documentChanges":[` +
 		`{"textDocument":{"uri":"` + u("main.go") + `","version":3},"edits":[` + lspEditJSON(0, 8, 0, 12, "MAIN") + `]},` +
@@ -309,7 +309,7 @@ func (f *fakeRhun) line() string {
 
 func TestShowDocumentOpensSelectsAndReveals(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "a.go")
+	path := filepath.ToSlash(filepath.Join(dir, "a.go"))
 	os.WriteFile(path, []byte("package a\n\nfunc F() {}\n"), 0o644)
 	ext, rhun := startFakeRhun(t, "reveal")
 	l, s, _ := testServer("Go")

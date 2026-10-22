@@ -80,14 +80,14 @@ func TestDottedConfigurationLookup(t *testing.T) {
 
 func TestFileURIRoundTrip(t *testing.T) {
 	for _, path := range []string{filepath.Join(t.TempDir(), "a b.go"), filepath.Join(t.TempDir(), "héllo.go")} {
-		if got := uriPath(fileURI(path)); got != path {
+		if got := uriPath(fileURI(path)); got != filepath.ToSlash(path) { // as rhun writes paths
 			t.Fatalf("%q => %q", path, got)
 		}
 	}
 	if got := fileURI("C:/Users/name/a b.go"); got != "file:///C:/Users/name/a%20b.go" {
 		t.Fatal(got)
 	}
-	if got := uriPath("file:///C:/Users/name/a%20b.go"); filepath.ToSlash(got) != "C:/Users/name/a b.go" {
+	if got := uriPath("file:///C:/Users/name/a%20b.go"); got != "C:/Users/name/a b.go" {
 		t.Fatal(got)
 	}
 }

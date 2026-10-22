@@ -186,7 +186,7 @@ func (l *lsp) configurationScope(scope string) bool {
 	if err != nil || u.Scheme != "file" || (u.Host != "" && u.Host != "localhost" && runtime.GOOS != "windows") {
 		return false
 	}
-	path := filepath.Clean(uriPath(scope))
+	path := filepath.ToSlash(filepath.Clean(uriPath(scope)))
 	if !filepath.IsAbs(path) {
 		return false
 	}

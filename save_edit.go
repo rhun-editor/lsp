@@ -209,7 +209,7 @@ func (l *lsp) commandWorkspaceEdit(raw json.RawMessage, s *server, queries ...*d
 	}
 	seen := map[string]bool{}
 	for _, g := range groups {
-		path := filepath.Clean(uriPath(g.uri))
+		path := filepath.ToSlash(filepath.Clean(uriPath(g.uri)))
 		if !filepath.IsAbs(path) || seen[path] {
 			return out, errors.New("invalid or duplicate command edit target")
 		}
@@ -217,7 +217,7 @@ func (l *lsp) commandWorkspaceEdit(raw json.RawMessage, s *server, queries ...*d
 		var q *documentQuery
 		if len(queries) != 0 {
 			for _, query := range queries {
-				if query != nil && filepath.Clean(query.path) == path {
+				if query != nil && filepath.ToSlash(filepath.Clean(query.path)) == path {
 					q = query
 					break
 				}
