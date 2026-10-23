@@ -84,6 +84,15 @@ run tests/linked.txt > "$work/out.txt"
 check linked
 rm "$state/lsp.ini"
 
+# an alternative the README lists for lsp.ini: the fake as ty, which rhun's sandbox starts only
+# because the run list names it
+cp "$work/bin/gopls" "$work/bin/ty"
+printf 'package main\n\n// TODO first\nfunc main() {\n\tERR := 1\n\t_ = ERR\n}\n' > "$work/proj/main.go"
+printf '[servers]\nGo = ty server\n' > "$state/lsp.ini"
+run tests/alternative.txt | sed -e 's/pid=[1-9][0-9]*/pid=PID/' -e 's/ confined=2/ confined=1/' > "$work/out.txt"
+check alternative
+rm "$state/lsp.ini" "$work/bin/ty"
+
 # workspace folders: two from the command line, a third added
 mkdir -p "$work/lib" "$work/docs"
 printf 'package main\n\n// FOLDERS\n' > "$work/proj/folders.go"

@@ -18,28 +18,31 @@ language per project, started when the first document of the language opens, run
 project folder. Nothing is downloaded: the extension runs the server you already have on your
 `PATH`:
 
-| Language | Server |
-| --- | --- |
-| Go | gopls |
-| Rust | rust-analyzer |
-| TypeScript, JavaScript | typescript-language-server |
-| Python | pyright-langserver |
-| C, C++ | clangd |
-| Zig | zls |
-| Lua | lua-language-server |
-| Ruby | solargraph |
-| Dart | dart language-server |
-| Kotlin | kotlin-language-server |
-| Swift | sourcekit-lsp |
-| OCaml | ocamllsp |
-| Haskell | haskell-language-server-wrapper |
-| Elixir | elixir-ls |
-| Nix | nil |
-| Terraform | terraform-ls |
-| YAML, JSON, HTML, CSS | the vscode language servers, yaml-language-server |
+| Language | Server | Alternatives for `lsp.ini` |
+| --- | --- | --- |
+| Go | gopls | |
+| Rust | rust-analyzer | |
+| TypeScript, JavaScript | typescript-language-server | `vtsls --stdio`, `deno lsp` |
+| Python | pyright-langserver | `ty server`, `pylsp`, `basedpyright-langserver --stdio`, `jedi-language-server`, `ruff server` |
+| C, C++ | clangd | `ccls` |
+| Zig | zls | |
+| Lua | lua-language-server | |
+| Ruby | solargraph | `ruby-lsp` |
+| Dart | dart language-server | |
+| Kotlin | kotlin-language-server | |
+| Swift | sourcekit-lsp | |
+| OCaml | ocamllsp | |
+| Haskell | haskell-language-server-wrapper | `haskell-language-server --lsp` |
+| Elixir | elixir-ls | |
+| Nix | nil | `nixd` |
+| Terraform | terraform-ls | |
+| YAML, JSON, HTML, CSS | the vscode language servers, yaml-language-server | |
 
 A missing server shows once in the status bar ("gopls not installed") and the language is left
-alone. **Restart Language Servers** stops them all and starts them again for the open documents.
+alone. The servers are looked up on your login shell's `PATH`, as rhun's terminals see it. rhun
+before 0.18.3 used its own `PATH` instead, which for an app started from the macOS Dock or Finder
+lacks folders such as `~/go/bin` and `/opt/homebrew/bin`; start it with
+`open -a rhun --env PATH="$PATH"` there. **Restart Language Servers** stops them all and starts them again for the open documents.
 
 The extension follows each server's document synchronization options: full text, incremental
 changes or no changes, open/close notifications, and save notifications with optional text.
@@ -150,11 +153,14 @@ command per language, by rhun's grammar name:
 
 ```ini
 [servers]
-Python = pylsp
+Python = ty server
 Go = gopls -remote=auto
 ```
 
-Use `off` to disable a server, such as `Rust = off`. Commands must contain an executable.
+Use `off` to disable a server, such as `Rust = off`. Commands must contain an executable, and
+rhun's sandbox starts only the programs the manifest's `run` list names: the servers and
+alternatives in the table above. Any other program shows "not allowed to start" in the status
+bar; open an issue to have it added.
 For arguments or paths containing spaces, use a JSON string array:
 
 ```ini
@@ -226,8 +232,9 @@ connection, with a 500 ms limit for pipes held open by descendant processes.
 ## Needs
 
 Documents: write (completion, code actions, rename and formatting can edit documents). Project:
-read (the server reads the project). Run: the servers above, by name, and `go`, which gopls
-runs to load the packages (without it gopls answers "no views"); no network.
+read (the server reads the project). Run: the servers and alternatives above, by name, `go`,
+which gopls runs to load the packages (without it gopls answers "no views"), and `cargo` and
+`rustc`, which rust-analyzer runs; no network.
 
 ## Build and test
 

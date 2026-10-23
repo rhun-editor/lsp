@@ -13,7 +13,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
 	"os/exec"
@@ -320,6 +322,12 @@ func (s *server) start() {
 		close(s.readyCh)
 	}()
 	out, err := s.launch()
+	if errors.Is(err, fs.ErrPermission) {
+		// found and executable (serverFor looked), so it is rhun's sandbox: it starts only the
+		// programs the manifest's run list names
+		s.endServer(s.name() + ": not allowed to start (the extension's run list does not name it)")
+		return
+	}
 	if err != nil {
 		s.endServer(s.name() + ": " + err.Error())
 		return

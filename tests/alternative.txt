@@ -1,0 +1,8 @@
+# an alternative server from lsp.ini (tests/run.sh: the fake as "ty server"): the run list names
+# it, so the sandbox starts it
+wait 100
+open proj/main.go
+wait-ext lsp running
+wait 800
+print-extensions
+print-marks
