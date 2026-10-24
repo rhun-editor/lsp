@@ -38,7 +38,7 @@ project folder. Nothing is downloaded: the extension runs the server you already
 | Terraform | terraform-ls | |
 | YAML, JSON, HTML, CSS | the vscode language servers, yaml-language-server | |
 
-Version 0.3.3 uses rhun 0.18.4's compiler-helper confinement and copyable setup commands.
+Version 0.3.4 uses rhun 0.18.4's compiler-helper confinement and copyable setup commands.
 Hold Ctrl (Command on macOS) over a symbol to underline it when the server finds a definition;
 click with the same modifier to navigate there.
 
