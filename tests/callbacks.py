@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real host/server callbacks, settings reload and progress through the native UI."""
 import json
+import errno
 import os
 from pathlib import Path
 import re
@@ -8,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,7 +53,17 @@ class Callbacks(unittest.TestCase):
         (self.state/'lsp.ini').write_text('[servers]\nGo = gopls\n')
 
     def tearDown(self):
-        self.tmp.cleanup()
+        # The host can exit just before its extension finishes flushing state.
+        # Retry only a directory repopulated during cleanup, and keep a bound.
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                self.tmp.cleanup()
+                break
+            except OSError as error:
+                if error.errno != errno.ENOTEMPTY or time.monotonic() >= deadline:
+                    raise
+                time.sleep(.05)
 
     def run_editor(self, actions, invalid=False, dynamic=False, extra_options=None, initial_wait=1300):
         options={'from':'initial'}
