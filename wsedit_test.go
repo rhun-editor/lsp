@@ -96,6 +96,27 @@ func TestConvertEditTransactions(t *testing.T) {
 	}
 }
 
+func TestDeferredWorkspaceEditUsesOnlyPreRequestSnapshots(t *testing.T) {
+	l, s, q, dir := convertHarness(t)
+	path := filepath.ToSlash(filepath.Join(dir, "a.go"))
+	raw := json.RawMessage(fmt.Sprintf(`{"changes":{%q:[%s]}}`, fileURI(path), lspEditJSON(0, 0, 0, 9, "[R]")))
+	o := convertOptions{caps: allCaps, queries: []*documentQuery{q}, strict: true, snapshotsOnly: true, server: s}
+	if _, err := l.convertEdit(raw, o); err == nil {
+		t.Fatal("accepted a closed target without a pre-request snapshot")
+	}
+	foreign := &document{id: 2, version: 8, path: path, text: []byte("package a\n")}
+	l.docs[2], l.byPath[path] = foreign, foreign
+	if _, err := l.convertEdit(raw, o); err == nil {
+		t.Fatal("accepted a target opened after the request")
+	}
+	o.queries = append(o.queries, &documentQuery{id: 2, version: 8, path: path, text: foreign.text, lspVersion: -1})
+	foreign.text, foreign.version = []byte("zpackage a\n"), 9
+	conv, err := l.convertEdit(raw, o)
+	if err != nil || len(conv.edit.Files) != 1 || conv.edit.Files[0].Target.Doc != 2 || conv.edit.Files[0].Version != 8 {
+		t.Fatal(conv, err)
+	}
+}
+
 func TestConvertEditRefusals(t *testing.T) {
 	l, s, q, dir := convertHarness(t)
 	u := func(name string) string { return fileURI(filepath.Join(dir, name)) }

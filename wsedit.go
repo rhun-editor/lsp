@@ -68,8 +68,10 @@ type convertOptions struct {
 	caps    editCaps
 	queries []*documentQuery
 	strict  bool
-	server  *server
-	label   string
+	// Deferred results must use only snapshots captured before asking the server.
+	snapshotsOnly bool
+	server        *server
+	label         string
 }
 
 // snapshot is the open document a path names: a query's snapshot, else the document as it is
@@ -78,6 +80,9 @@ func (l *lsp) snapshot(path string, o convertOptions) *documentQuery {
 		if q != nil && q.text != nil && filepath.Clean(q.path) == filepath.Clean(path) {
 			return q
 		}
+	}
+	if o.snapshotsOnly {
+		return nil
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -172,6 +177,9 @@ func (l *lsp) convertEdit(raw json.RawMessage, o convertOptions) (convertedEdit,
 			text = []byte{}
 		default:
 			q := l.snapshot(at.Path, o)
+			if o.snapshotsOnly && q == nil {
+				return errors.New("code action target has no snapshot from before resolution")
+			}
 			// a numeric LSP version is meaningful only for a document synchronized to this
 			// server; a command's edit naming another is refused
 			if len(version) > 0 && string(version) != "null" {

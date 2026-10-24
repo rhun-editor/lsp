@@ -164,7 +164,7 @@ func (s *server) applyCommandEdit(work *commandEdit, id json.RawMessage, params 
 			}
 		} else {
 			var conv convertedEdit
-			conv, err = s.l.commandWorkspaceEditFull(p.Edit, s, p.Label, c.queries...)
+			conv, err = s.l.deferredWorkspaceEditFull(p.Edit, s, p.Label, c.queries...)
 			origins = conv.origins
 			if err == nil {
 				c.queries, err = s.l.applyExplicitEdit(c.ctx, conv.edit, c.queries, s)
@@ -243,6 +243,9 @@ func (l *lsp) runExplicitCommand(a actionData) {
 			return
 		}
 		queries = l.commandQuerySnapshots(s, q)
+		if a.Queries != nil {
+			queries = a.Queries
+		}
 		if err := retainActionTargetVersions(queries, a.Targets); err != nil {
 			l.ext.Toast(selected.Title + ": " + err.Error())
 			return
@@ -260,7 +263,7 @@ func (l *lsp) runExplicitCommand(a actionData) {
 			return
 		}
 		if actionHasEdit(resolved) {
-			conv, err := l.commandWorkspaceEditFull(resolved.Edit, s, resolved.Title, queries...)
+			conv, err := l.deferredWorkspaceEditFull(resolved.Edit, s, resolved.Title, queries...)
 			edit := conv.edit
 			if err == nil {
 				// Even an action editing only another file remains conditional on its origin.

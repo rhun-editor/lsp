@@ -290,8 +290,9 @@ type actionData struct {
 	FileOps    []fileOp       `json:"fileOps,omitempty"` // the action's edit made them
 	// protocol 1.1 (kept in memory, never sent): an edit with file operations that goes with the
 	// resolve answer, and the command reference that follows it
-	Edit *rhunext.WorkspaceEdit `json:"-"`
-	Ref  *rhunext.CommandRef    `json:"-"`
+	Edit    *rhunext.WorkspaceEdit `json:"-"`
+	Ref     *rhunext.CommandRef    `json:"-"`
+	Queries []*documentQuery       `json:"-"`
 }
 
 func (l *lsp) Actions(ext *rhunext.Ext, req rhunext.ActionsRequest) []rhunext.CodeAction {
