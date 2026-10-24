@@ -109,6 +109,13 @@ class Callbacks(unittest.TestCase):
         queries=[x for x in trace if x.get('method')=='textDocument/definition']
         self.assertEqual(len(queries),1,trace)
 
+    def test_definition_path_aliases_navigate_once_instead_of_opening_a_picker(self):
+        out,trace=self.run_editor(['cmd definition','wait 500','print-state','print-palette'],
+                                  extra_options={'definitionAliases':True})
+        self.assertIn('line=1 col=8 sel=7',out)
+        self.assertNotIn('choose=Go to definition',out)
+        self.assertTrue(any(m.get('method')=='textDocument/definition' for m in trace))
+
     def test_full_sync_and_save_include_current_text(self):
         out,trace=self.run_editor(['type é','wait 200','cmd save','wait 300'],extra_options={'syncKind':1,'syncOpenClose':True,'syncSave':True})
         changes=[x for x in trace if x.get('method')=='textDocument/didChange']

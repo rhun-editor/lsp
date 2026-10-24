@@ -25,6 +25,7 @@ func main() {
 	reader := bufio.NewReader(os.Stdin)
 	pushes := 0
 	dynamic := false
+	definitionAliases := false
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
@@ -56,6 +57,7 @@ func main() {
 			params, _ := message["params"].(map[string]any)
 			options, _ := params["initializationOptions"].(map[string]any)
 			dynamic, _ = options["dynamicCapabilities"].(bool)
+			definitionAliases, _ = options["definitionAliases"].(bool)
 			var syncOptions any = 2
 			if kind, ok := options["syncKind"].(float64); ok {
 				openClose, _ := options["syncOpenClose"].(bool)
@@ -68,7 +70,11 @@ func main() {
 			if delay, ok := options["initializeDelayMs"].(float64); ok {
 				time.Sleep(time.Duration(delay) * time.Millisecond)
 			}
-			send(map[string]any{"jsonrpc": "2.0", "id": message["id"], "result": map[string]any{"capabilities": map[string]any{"textDocumentSync": syncOptions}}})
+			caps := map[string]any{"textDocumentSync": syncOptions}
+			if definitionAliases {
+				caps["definitionProvider"] = true
+			}
+			send(map[string]any{"jsonrpc": "2.0", "id": message["id"], "result": map[string]any{"capabilities": caps}})
 		case "initialized":
 			if dynamic {
 				send(map[string]any{"jsonrpc": "2.0", "id": "dynamic-register", "method": "client/registerCapability", "params": map[string]any{"registrations": []any{
@@ -102,6 +108,20 @@ func main() {
 		case "window/workDoneProgress/cancel":
 			send(map[string]any{"jsonrpc": "2.0", "method": "$/progress", "params": map[string]any{"token": "index", "value": map[string]any{"kind": "end"}}})
 		case "textDocument/definition":
+			if definitionAliases {
+				params := message["params"].(map[string]any)
+				uri := params["textDocument"].(map[string]any)["uri"].(string)
+				alias := strings.Replace(uri, "/main.go", "//main.go", 1)
+				rg := map[string]any{"start": map[string]any{"line": 0, "character": 0}, "end": map[string]any{"line": 0, "character": 7}}
+				link := func(uri string) any {
+					return map[string]any{"targetUri": uri, "targetRange": rg, "targetSelectionRange": rg}
+				}
+				if token, ok := params["partialResultToken"]; ok {
+					send(map[string]any{"jsonrpc": "2.0", "method": "$/progress", "params": map[string]any{"token": token, "value": []any{link(alias)}}})
+				}
+				send(map[string]any{"jsonrpc": "2.0", "id": message["id"], "result": []any{link(uri), link(alias)}})
+				continue
+			}
 			send(map[string]any{"jsonrpc": "2.0", "id": "dynamic-unregister", "method": "client/unregisterCapability", "params": map[string]any{"unregisterations": []any{map[string]any{"id": "go-definition", "method": "textDocument/definition"}}}})
 			send(map[string]any{"jsonrpc": "2.0", "id": message["id"], "result": []any{}})
 		case "exit":

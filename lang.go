@@ -116,12 +116,12 @@ func (l *lsp) LocationsStream(ext *rhunext.Ext, kind string, req rhunext.PosRequ
 	if kind == "references" {
 		p["context"] = map[string]any{"includeDeclaration": true}
 	}
-	convert := func(raw json.RawMessage) []rhunext.Location { return l.locations(raw, d) }
+	convert := l.locationConverter(d, kind != "references")
 	res, carried, err := streamQuery(l, d, out, k.limits, k.method, p, convert, sendLocations)
 	if err != nil && len(carried) == 0 {
 		return nil
 	}
-	locs := append(carried, l.locations(res, d)...)
+	locs := append(carried, convert(res)...)
 	return streamRest(l, out, locs, locationSize, sendLocations)
 }
 
@@ -130,6 +130,31 @@ func sendLocations(out *rhunext.Stream, locs []rhunext.Location) error {
 }
 
 func locationSize(loc rhunext.Location) int { return len(loc.Target.String()) + len(loc.Text) + 48 }
+
+// Navigation servers can repeat one target using path aliases, including across partial
+// and final responses. Keep one target per request so a single definition navigates directly.
+func (l *lsp) locationConverter(query *documentQuery, distinct bool) func(json.RawMessage) []rhunext.Location {
+	type target struct {
+		path string
+		span rhunext.Range
+	}
+	seen := map[target]bool{}
+	return func(raw json.RawMessage) []rhunext.Location {
+		locs := l.locations(raw, query)
+		if !distinct {
+			return locs
+		}
+		out := locs[:0]
+		for _, loc := range locs {
+			key := target{loc.Target.Path, loc.Range}
+			if !seen[key] {
+				seen[key] = true
+				out = append(out, loc)
+			}
+		}
+		return out
+	}
+}
 
 // locations reads Location, Location[] or LocationLink[]
 func (l *lsp) locations(res json.RawMessage, query *documentQuery) []rhunext.Location {
@@ -158,6 +183,7 @@ func (l *lsp) locations(res json.RawMessage, query *documentQuery) []rhunext.Loc
 		if !filepath.IsAbs(path) {
 			continue
 		}
+		path = filepath.ToSlash(filepath.Clean(path))
 		text, ok := texts[path]
 		if !ok {
 			text, _, _ = l.textForQuery(path, query)
