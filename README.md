@@ -18,10 +18,6 @@ language per project, started when the first document of the language opens, run
 project folder. Nothing is downloaded: the extension runs the server you already have on your
 `PATH`:
 
-Version 0.3.3 uses rhun 0.18.4's compiler-helper confinement and copyable setup commands.
-Hold Ctrl (Command on macOS) over a symbol to underline it when the server finds a definition;
-click with the same modifier to navigate there.
-
 | Language | Server | Alternatives for `lsp.ini` |
 | --- | --- | --- |
 | Go | gopls | |
@@ -41,6 +37,10 @@ click with the same modifier to navigate there.
 | Nix | nil | `nixd` |
 | Terraform | terraform-ls | |
 | YAML, JSON, HTML, CSS | the vscode language servers, yaml-language-server | |
+
+Version 0.3.3 uses rhun 0.18.4's compiler-helper confinement and copyable setup commands.
+Hold Ctrl (Command on macOS) over a symbol to underline it when the server finds a definition;
+click with the same modifier to navigate there.
 
 A missing server shows once in the status bar ("gopls not installed") and offers an **Install
 instructions** button. It opens a guide in its own editor tab for that language and operating system, with prerequisites,
