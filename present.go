@@ -77,8 +77,10 @@ func (l *lsp) currentSoon(id rhunext.Doc, version int64, wait time.Duration) (*d
 		l.mu.Lock()
 		gone := l.docs[id] != doc || doc.version != version
 		s := doc.server
+		selected, attempted := l.servers[doc.lang]
+		unavailable := attempted && selected == nil
 		l.mu.Unlock()
-		if gone {
+		if gone || unavailable {
 			return nil, nil, nil
 		}
 		state := serverPending

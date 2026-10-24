@@ -45,7 +45,7 @@ type lspItem struct {
 		Detail      string `json:"detail"`
 		Description string `json:"description"`
 	} `json:"labelDetails"`
-	Kind             int             `json:"kind"`
+	Kind             int             `json:"kind,omitempty"`
 	Tags             []int           `json:"tags"`
 	Detail           string          `json:"detail"`
 	Documentation    json.RawMessage `json:"documentation"`
@@ -54,8 +54,8 @@ type lspItem struct {
 	SortText         string          `json:"sortText"`
 	FilterText       string          `json:"filterText"`
 	InsertText       string          `json:"insertText"`
-	InsertTextFormat int             `json:"insertTextFormat"`
-	InsertTextMode   int             `json:"insertTextMode"`
+	InsertTextFormat int             `json:"insertTextFormat,omitempty"`
+	InsertTextMode   int             `json:"insertTextMode,omitempty"`
 	TextEdit         *lspTextEdit    `json:"textEdit"`
 	TextEditText     string          `json:"textEditText"`
 	AdditionalEdits  []lspTextEdit   `json:"additionalTextEdits"`
@@ -70,8 +70,8 @@ type lspItem struct {
 type lspItemDefaults struct {
 	CommitCharacters []string        `json:"commitCharacters"`
 	EditRange        json.RawMessage `json:"editRange"`
-	InsertTextFormat int             `json:"insertTextFormat"`
-	InsertTextMode   int             `json:"insertTextMode"`
+	InsertTextFormat int             `json:"insertTextFormat,omitempty"`
+	InsertTextMode   int             `json:"insertTextMode,omitempty"`
 	Data             json.RawMessage `json:"data"`
 }
 
@@ -426,7 +426,7 @@ func docText(raw json.RawMessage) string {
 		return strings.TrimSpace(s)
 	}
 	var mc struct {
-		Kind  string `json:"kind"`
+		Kind  string `json:"kind,omitempty"`
 		Value string `json:"value"`
 	}
 	if json.Unmarshal(raw, &mc) == nil {

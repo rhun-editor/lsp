@@ -8,7 +8,7 @@ import (
 )
 
 // helpers are programs the servers run themselves (README, Needs)
-var helpers = []string{"go", "cargo", "rustc"}
+var helpers = []string{"@build", "getconf", "nix", "git", "xcode-select", "xcrun", "tr", "echo", "zsh", "clang", "cc", "ld", "ar", "bash", "uname", "dirname", "basename", "readlink", "which", "sed", "grep", "cut", "ls", "xargs", "java", "kotlinc", "dune", "ghc", "ghc-pkg", "cabal", "stack", "elixir", "erl", "mix", "zig", "swift", "swiftc", "node", "go", "cargo", "rustc"}
 
 // manifestRuns is extension.ini's [needs] run list
 func manifestRuns(t *testing.T) map[string]bool {
@@ -87,6 +87,9 @@ func TestRunListNamesEveryServer(t *testing.T) {
 	}
 	for _, program := range helpers {
 		known[program] = true
+		if !runs[program] {
+			t.Errorf("required helper %s is not in the run list", program)
+		}
 	}
 	for name := range runs {
 		if !known[name] {

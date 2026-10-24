@@ -244,6 +244,7 @@ func (l *lsp) ResolveCodeAction(ext *rhunext.Ext, req rhunext.CodeActionResolveR
 	}
 	ctx, cancel := context.WithTimeout(parent, waitActionResolve)
 	defer cancel()
+	queries := l.commandQuerySnapshots(s, d)
 	resolved, err := resolveAction(ctx, d, *a.Resolve)
 	if err != nil {
 		return rhunext.ResolvedAction{}, err
@@ -257,15 +258,26 @@ func (l *lsp) ResolveCodeAction(ext *rhunext.Ext, req rhunext.CodeActionResolveR
 			out.Command = l.execRef(s, *cmd)
 		}
 		if out.Command == nil {
-			next := actionData{Lang: a.Lang, Generation: a.Generation, Prepared: &resolved, Doc: req.Doc, Version: req.Version}
+			next := actionData{Lang: a.Lang, Generation: a.Generation, Prepared: &resolved, Doc: req.Doc, Version: req.Version, Queries: queries}
 			go l.runExplicitCommand(next)
 			return rhunext.ResolvedAction{}, nil
 		}
 	}
 	if actionHasEdit(resolved) {
-		conv, err := l.commandWorkspaceEditFull(resolved.Edit, s, resolved.Title, l.commandQuerySnapshots(s, d)...)
+		conv, err := l.deferredWorkspaceEditFull(resolved.Edit, s, resolved.Title, queries...)
 		if err != nil {
 			return rhunext.ResolvedAction{}, err
+		}
+		// Even a foreign-file edit remains conditional on the unchanged origin.
+		found := false
+		for _, file := range conv.edit.Files {
+			if queryMatchesTarget(d, file.Target) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			conv.edit.Files = append(conv.edit.Files, rhunext.FileEdit{Target: rhunext.Target{Doc: d.id}, Version: d.version})
 		}
 		out.Edit = &conv.edit
 		l.expectFileOps(conv.ops)

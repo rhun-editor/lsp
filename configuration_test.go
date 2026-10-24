@@ -91,3 +91,36 @@ func TestFileURIRoundTrip(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestEditorValidationDefaultsRemainOverridable(t *testing.T) {
+	var cfg *settingsConfig
+	if configurationSection(cfg.forLanguage("JSON").Settings, "json.validate.enable") != true {
+		t.Fatal("JSON validation disabled by missing editor defaults")
+	}
+	cfg = &settingsConfig{Languages: map[string]languageSettings{"JSON": {Settings: map[string]any{"json": map[string]any{"validate": map[string]any{"enable": false}}}}}}
+	if configurationSection(cfg.forLanguage("JSON").Settings, "json.validate.enable") != false {
+		t.Fatal("user validation setting overridden")
+	}
+}
+
+func TestSelectingDenoEnablesAnalysisAndPreservesOverrides(t *testing.T) {
+	cfg := &settingsConfig{}
+	for _, lang := range []string{"TypeScript", "JavaScript"} {
+		got := cfg.forServer(lang, "/bin/deno")
+		if configurationSection(got.Settings, "deno.enable") != true || string(got.InitializationOptions) != `{"enable":true}` {
+			t.Fatalf("Deno disabled for %s: %#v", lang, got)
+		}
+		if configurationSection(cfg.forServer(lang, "typescript-language-server").Settings, "deno.enable") != nil {
+			t.Fatal("Deno defaults affected a different server")
+		}
+	}
+	cfg.Languages = map[string]languageSettings{"TypeScript": {Settings: map[string]any{"deno.enable": false}}}
+	got := cfg.forServer("TypeScript", "deno")
+	if configurationSection(got.Settings, "deno.enable") != false || string(got.InitializationOptions) != `{"enable":false}` {
+		t.Fatalf("explicit disable ignored: %#v", got)
+	}
+	cfg.Languages["TypeScript"] = languageSettings{InitializationOptions: json.RawMessage(`{"enable":false,"lint":true}`)}
+	if got := cfg.forServer("TypeScript", "deno"); string(got.InitializationOptions) != `{"enable":false,"lint":true}` {
+		t.Fatalf("initialization override ignored: %s", got.InitializationOptions)
+	}
+}

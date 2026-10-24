@@ -152,6 +152,15 @@ func (l *lsp) commandWorkspaceEditFull(raw json.RawMessage, s *server, label str
 	return convertedEdit{edit: edit}, err
 }
 
+// A deferred answer cannot safely use text first observed after the server started work.
+func (l *lsp) deferredWorkspaceEditFull(raw json.RawMessage, s *server, label string, queries ...*documentQuery) (convertedEdit, error) {
+	if caps := l.editCaps(); caps.ws {
+		return l.convertEdit(raw, convertOptions{caps: caps, queries: queries, strict: true, snapshotsOnly: true, server: s, label: label})
+	}
+	edit, err := l.commandWorkspaceEdit(raw, s, queries...)
+	return convertedEdit{edit: edit}, err
+}
+
 // Command edits may touch several files. Each group is converted against its own immutable
 // snapshot. A numeric LSP version is meaningful only for a document synchronized to this server.
 func (l *lsp) commandWorkspaceEdit(raw json.RawMessage, s *server, queries ...*documentQuery) (rhunext.WorkspaceEdit, error) {

@@ -444,7 +444,10 @@ func (l *lsp) pull(d *document, s *server) {
 	}
 	res, err := q.request(5*time.Second, "textDocument/diagnostic", params)
 	var report documentReport
-	if err != nil || json.Unmarshal(res, &report) != nil {
+	if err != nil {
+		return
+	}
+	if json.Unmarshal(res, &report) != nil {
 		return
 	}
 	l.pullMu.Lock()

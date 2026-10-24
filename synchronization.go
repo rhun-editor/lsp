@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/rhun-editor/extension-protocol/go/rhunext"
@@ -151,6 +153,9 @@ func (l *lsp) synchronizeDeltaLocked(d *document, s *server, changes []map[strin
 		return nil
 	}
 	for _, frame := range frames {
+		if frame.method == "textDocument/didOpen" {
+			s.beginInitialAnalysis(fileURI(d.path))
+		}
 		if err := s.writeContextGuard(context.Background(), map[string]any{"jsonrpc": "2.0", "method": frame.method, "params": frame.params}, guard); err != nil {
 			return false
 		}
@@ -298,7 +303,7 @@ func (l *lsp) documentEvent(ev rhunext.Event) {
 			l.mu.Unlock()
 			return
 		}
-		d := &document{id: o.Doc, version: o.Version, lang: o.Lang, path: o.Path}
+		d := &document{id: o.Doc, version: o.Version, lang: documentLanguage(o.Lang, o.Path), path: o.Path}
 		l.docs[d.id] = d
 		l.byPath[d.path] = d
 		l.mu.Unlock()
@@ -411,4 +416,13 @@ func (l *lsp) documentEvent(ev rhunext.Event) {
 	if needFetch {
 		l.fetchDocument(d)
 	}
+}
+
+// rhun's HCL grammar also covers Nomad and generic HCL files. Only Terraform
+// source files use the Terraform server and its existing settings key.
+func documentLanguage(grammar, path string) string {
+	if grammar == "HCL" && strings.EqualFold(filepath.Ext(path), ".tf") {
+		return "Terraform"
+	}
+	return grammar
 }

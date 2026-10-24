@@ -364,3 +364,18 @@ func TestPresentationWaitThatGivesUpStillOpensTheDocument(t *testing.T) {
 	d.presWaiting--
 	l.mu.Unlock()
 }
+
+func TestTerraformUsesTheEditorsHCLGrammar(t *testing.T) {
+	for _, c := range []struct{ grammar, path, want string }{
+		{"HCL", "/project/main.tf", "Terraform"},
+		{"HCL", "/project/main.TF", "Terraform"},
+		{"HCL", "/project/config.hcl", "HCL"},
+		{"HCL", "/project/job.nomad", "HCL"},
+		{"Go", "/project/main.go", "Go"},
+		{"Terraform", "/project/main.tf", "Terraform"},
+	} {
+		if got := documentLanguage(c.grammar, c.path); got != c.want {
+			t.Fatalf("%s %s: %s, want %s", c.grammar, c.path, got, c.want)
+		}
+	}
+}

@@ -20,7 +20,9 @@ CGO_ENABLED=0 go build -o "$dir/bin/lsp-$target" .
 # sandbox lets the extension start only what the list names
 mkdir -p "$work/bin"
 CGO_ENABLED=0 go build -o "$work/bin/gopls" ./tests/fakeserver
-cp extension.ini "$dir/"
+# Keep the fake-server fixture read-only so rename still exercises confirmation
+# for edits to closed files. Real compiler servers use the shipped write grant.
+sed 's/^project = write$/project = read/' extension.ini > "$dir/extension.ini"
 printf 'package main\n\n// TODO first\nfunc main() {\n\tERR := 1\n\t_ = ERR\n}\n' > "$work/proj/main.go"
 printf 'package main\n\nfunc other() {}\n' > "$work/proj/other.go"
 printf 'package main\n\nfunc f() {\n    x := 1\n    _ = x\n}\n' > "$work/proj/fmt.go"
