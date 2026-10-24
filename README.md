@@ -18,6 +18,10 @@ language per project, started when the first document of the language opens, run
 project folder. Nothing is downloaded: the extension runs the server you already have on your
 `PATH`:
 
+Version 0.3.3 uses rhun 0.18.4's compiler-helper confinement and copyable setup commands.
+Hold Ctrl (Command on macOS) over a symbol to underline it when the server finds a definition;
+click with the same modifier to navigate there.
+
 | Language | Server | Alternatives for `lsp.ini` |
 | --- | --- | --- |
 | Go | gopls | |
@@ -38,11 +42,37 @@ project folder. Nothing is downloaded: the extension runs the server you already
 | Terraform | terraform-ls | |
 | YAML, JSON, HTML, CSS | the vscode language servers, yaml-language-server | |
 
-A missing server shows once in the status bar ("gopls not installed") and the language is left
-alone. The servers are looked up on your login shell's `PATH`, as rhun's terminals see it. rhun
+A missing server shows once in the status bar ("gopls not installed") and offers an **Install
+instructions** button. It opens a guide in its own editor tab for that language and operating system, with prerequisites,
+commands you can copy into your terminal, and links to the server's official instructions.
+**Set Up Language Server** opens the same guide for the current file, or a language picker when
+the file has no supported language. **Choose another language** in the guide opens that picker
+at any time. The guide follows your configured server, including supported alternatives, and
+explains how to retry after installing. A server being on `PATH` does not confirm it started.
+Installation is manual; the extension does not run installation commands.
+
+The servers are looked up on your login shell's `PATH`, as rhun's terminals see it. rhun
 before 0.18.3 used its own `PATH` instead, which for an app started from the macOS Dock or Finder
 lacks folders such as `~/go/bin` and `/opt/homebrew/bin`; start it with
 `open -a rhun --env PATH="$PATH"` there. **Restart Language Servers** stops them all and starts them again for the open documents.
+Choosing `deno lsp` enables Deno analysis for that language. Explicit settings and initialization
+options can disable it.
+Compiler-backed servers can take longer on first launch. ElixirLS may download and compile its
+runtime; the status stays at starting while it prepares. Kotlin also needs the Kotlin compiler
+on PATH so its server can find the standard library.
+
+The setup page includes project prerequisites and copyable build commands. Open the project
+root so servers can find dependencies and compiler settings. OCaml needs Dune build information,
+Zig compiler diagnostics need a `check` build step, and Xcode projects need a compatible build
+server to supply their compiler arguments. Ruff supplies linting and formatting; Jedi supplies
+completion and navigation without type checking. Use Pyright, basedpyright or ty for Python
+type checking. One server command is selected per language.
+
+For fwcd Kotlin Language Server, initial queries wait for the first document diagnostics to
+avoid racing its startup compiler analysis. This wait respects cancellation and process exit,
+and falls back after 30 seconds for configurations that disable diagnostics. On macOS, the
+SourceKit toolchain view uses in-process SourceKit and the separate `swift-frontend` dependency
+scanner, avoiding duplicate compiler classes without changing the installed Xcode toolchain.
 
 The extension follows each server's document synchronization options: full text, incremental
 changes or no changes, open/close notifications, and save notifications with optional text.
@@ -90,8 +120,7 @@ not open converted from the bytes on disk and sent with their `fnv1a64` hash (rh
 edit when the file changed since), created, renamed and deleted files (`resourceOperations`
 create, rename, delete; `failureHandling` transactional), the rename's new name or the action's
 title as the label, and a change annotation that needs confirmation asking rhun for its
-confirmation list. As the extension has `project = read`, rhun asks before it writes files that
-are not open. `workspace/applyEdit` is answered with `applied`, `failureReason` and
+confirmation list. `workspace/applyEdit` is answered with `applied`, `failureReason` and
 `failedChange` (the `documentChanges` index rhun or the conversion refused). After an edit that
 created, renamed or deleted files is made, servers that asked for them (`fileOperations`
 didCreate, didRename, didDelete, static or registered) get `workspace/didCreateFiles`,
@@ -231,10 +260,19 @@ connection, with a 500 ms limit for pipes held open by descendant processes.
 
 ## Needs
 
-Documents: write (completion, code actions, rename and formatting can edit documents). Project:
-read (the server reads the project). Run: the servers and alternatives above, by name, `go`,
-which gopls runs to load the packages (without it gopls answers "no views"), and `cargo` and
-`rustc`, which rust-analyzer runs; no network.
+Documents: write (completion, code actions, rename and formatting can edit documents).
+Project: write, for compiler outputs, indexes and dependency metadata. Network: yes, for package
+and schema resolution and build-tool coordination. The run list names the servers and their
+runtime helpers (Node, Java, Ruby, Dune, GHC, Swift, Zig, Elixir and shell utilities). `@build`
+permits compiler-generated programs in the extension cache and writable project, such as Swift
+package manifests and Cargo build scripts. The user's other home files remain inaccessible.
+
+Rustup toolchains require a rhun build that passes `RUSTUP_HOME` and permits the selected Rust
+installation. Flutter's Dart server runs directly from its bundled Dart SDK. On macOS, Swift uses
+the matching in-process SourceKit library from Xcode, with generated interfaces in extension
+state. OCaml uses the tools alongside the selected `ocamllsp`; build the Dune project before
+expecting compiler diagnostics. Zig type errors require a `check` step in `build.zig` and a save,
+as described in the [ZLS guide](https://zigtools.org/zls/guides/build-on-save/).
 
 ## Build and test
 

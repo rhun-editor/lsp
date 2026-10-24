@@ -46,3 +46,28 @@ func TestDocText(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+// Resolving an item must not add zero-valued LSP enums that the server never sent.
+// Strict servers such as jedi-language-server reject insertTextMode: 0.
+func TestCompletionResolvePreservesOptionalEnums(t *testing.T) {
+	for _, raw := range []string{`{"label":"total","kind":3,"insertTextFormat":1}`, `{"label":"total","insertTextMode":2}`} {
+		var item lspItem
+		if err := json.Unmarshal([]byte(raw), &item); err != nil {
+			t.Fatal(err)
+		}
+		data, err := json.Marshal(item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		json.Unmarshal(data, &fields)
+		for _, name := range []string{"kind", "insertTextFormat", "insertTextMode"} {
+			if string(fields[name]) == "0" {
+				t.Fatalf("resolve added invalid %s: %s", name, data)
+			}
+		}
+		if item.InsertTextMode == 2 && string(fields["insertTextMode"]) != "2" {
+			t.Fatal(string(data))
+		}
+	}
+}

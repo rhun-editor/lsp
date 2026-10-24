@@ -111,7 +111,7 @@ func TestCapabilityBatchRollbackAndLimits(t *testing.T) {
 	}
 }
 func TestSelectorValidation(t *testing.T) {
-	for _, raw := range []string{`[{}]`, `[{"notebook":"x"}]`, `[{"language":null}]`, `[{"pattern":"["}]`, `[{"pattern":{"baseUri":"https://example.org","pattern":"**"}}]`, `[{"pattern":{"baseUri":"file:relative","pattern":"**"}}]`, `nullx`} {
+	for _, raw := range []string{`[{}]`, `[{"notebook":false}]`, `[{"language":null}]`, `[{"pattern":"["}]`, `[{"pattern":{"baseUri":"https://example.org","pattern":"**"}}]`, `[{"pattern":{"baseUri":"file:relative","pattern":"**"}}]`, `nullx`} {
 		if _, err := parseSelector(json.RawMessage(raw)); err == nil {
 			t.Fatal("accepted", raw)
 		}
@@ -193,5 +193,35 @@ func TestRegistrationOptionsBudgetAndSelectorBounds(t *testing.T) {
 		if code := registerForTest(s, "invalid", "textDocument/hover", selector); code != -32602 {
 			t.Fatal(code)
 		}
+	}
+}
+
+func TestNotebookFiltersDoNotDisableFileRegistrations(t *testing.T) {
+	filters, err := parseSelector(json.RawMessage(`[{"scheme":"file","language":"python"},{"notebook":{"scheme":"file"},"language":"python"}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := capabilityRegistration{selector: filters}
+	if !r.matches(selectorDocument{scheme: "file", language: "python"}) || r.matches(selectorDocument{scheme: "file", language: "go"}) {
+		t.Fatal("mixed selector widened or lost file scope")
+	}
+	r.selector = filters[1:]
+	if r.matches(selectorDocument{scheme: "file", language: "python"}) {
+		t.Fatal("notebook filter matched a regular file")
+	}
+}
+
+func TestDartRegistrationKeepsSupportedBatchServices(t *testing.T) {
+	s := &server{registrations: map[string]capabilityRegistration{}, l: &lsp{}}
+	raw := json.RawMessage(`{"registrations":[{"id":"symbols","method":"textDocument/documentSymbol","registerOptions":{"documentSelector":[{"language":"dart"}]}},{"id":"will-rename","method":"workspace/willRenameFiles","registerOptions":{"filters":[{"pattern":{"glob":"**/*.dart","matches":"file"}}]}}]}`)
+	if _, code, message := s.registerCapabilities(raw); code != 0 {
+		t.Fatal(code, message)
+	}
+	if !s.supports("textDocument/documentSymbol", selectorDocument{language: "dart", scheme: "file"}) {
+		t.Fatal("Dart file features were rejected with willRenameFiles")
+	}
+	filters, err := parseSelector(json.RawMessage(`[{"language":"ocaml","scheme":null,"pattern":null}]`))
+	if err != nil || !(capabilityRegistration{selector: filters}).matches(selectorDocument{language: "ocaml", scheme: "file"}) {
+		t.Fatal("OCaml nullable selector", err)
 	}
 }

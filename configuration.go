@@ -86,15 +86,39 @@ func mergeSettings(base, override map[string]any) map[string]any {
 }
 
 func (cfg *settingsConfig) forLanguage(language string) languageSettings {
+	// These servers expect their editor defaults in workspace/configuration.
+	// In particular, an empty JSON configuration disables validation.
+	defaults := map[string]any{}
+	switch language {
+	case "JSON":
+		defaults["json"] = map[string]any{"validate": map[string]any{"enable": true}}
+	case "CSS":
+		defaults["css"] = map[string]any{"validate": true}
+	}
 	if cfg == nil {
-		return languageSettings{Settings: map[string]any{}}
+		return languageSettings{Settings: defaults}
 	}
 	local := cfg.Languages[language]
 	options := cfg.Defaults.InitializationOptions
 	if local.InitializationOptions != nil {
 		options = local.InitializationOptions
 	}
-	return languageSettings{Settings: mergeSettings(cfg.Defaults.Settings, local.Settings), InitializationOptions: options}
+	return languageSettings{Settings: mergeSettings(mergeSettings(defaults, cfg.Defaults.Settings), local.Settings), InitializationOptions: options}
+}
+
+// Choosing Deno as the server opts this language into Deno analysis. It otherwise
+// accepts requests but returns no features unless the client explicitly enables it.
+func (cfg *settingsConfig) forServer(language, executable string) languageSettings {
+	result := cfg.forLanguage(language)
+	if name := filepath.Base(executable); name != "deno" && name != "deno.exe" {
+		return result
+	}
+	result.Settings = mergeSettings(map[string]any{"deno": map[string]any{"enable": true}}, result.Settings)
+	var custom map[string]any
+	if len(result.InitializationOptions) == 0 || json.Unmarshal(result.InitializationOptions, &custom) == nil {
+		result.InitializationOptions, _ = json.Marshal(mergeSettings(map[string]any{"enable": configurationSection(result.Settings, "deno.enable")}, custom))
+	}
+	return result
 }
 
 func readConfig(path string) (map[string][]string, error) {
@@ -233,7 +257,7 @@ func (s *server) sendConfiguration() error {
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
 	s.l.mu.Lock()
-	settings := s.l.settings.forLanguage(s.lang).Settings
+	settings := s.l.settings.forServer(s.lang, s.name()).Settings
 	s.l.mu.Unlock()
 	return s.write(map[string]any{"jsonrpc": "2.0", "method": "workspace/didChangeConfiguration", "params": map[string]any{"settings": settings}})
 }
@@ -244,7 +268,7 @@ func (s *server) publishReady() error {
 	for {
 		s.l.mu.Lock()
 		generation := s.l.configGeneration
-		settings := s.l.settings.forLanguage(s.lang).Settings
+		settings := s.l.settings.forServer(s.lang, s.name()).Settings
 		s.l.mu.Unlock()
 		if err := s.write(map[string]any{"jsonrpc": "2.0", "method": "workspace/didChangeConfiguration", "params": map[string]any{"settings": settings}}); err != nil {
 			return err
@@ -323,7 +347,7 @@ func (s *server) requestResult(method string, params json.RawMessage) (any, int,
 			return nil, -32602, "invalid configuration items"
 		}
 		s.l.mu.Lock()
-		settings := s.l.settings.forLanguage(s.lang).Settings
+		settings := s.l.settings.forServer(s.lang, s.name()).Settings
 		values := make([]any, len(*p.Items))
 		for i, item := range *p.Items {
 			if s.l.configurationScope(item.ScopeURI) {

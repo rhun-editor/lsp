@@ -109,6 +109,10 @@ type lsp struct {
 	statusOnce                     sync.Once
 	stopping                       bool
 	config                         map[string][]string
+	setupView                      rhunext.View
+	setupMu                        sync.Mutex
+	setupLang                      string
+	setupNotes                     map[int64]string
 	diags                          map[string]*keptDiagnostics // the server's diagnostics by path (diagnostics.go)
 	scopeWake                      chan struct{}               // provider scope (scope.go)
 	found                          map[string]bool
@@ -164,6 +168,8 @@ func (l *lsp) Event(ext *rhunext.Ext, ev rhunext.Event) {
 
 func (l *lsp) Run(ext *rhunext.Ext, command string, doc rhunext.Doc) {
 	switch command {
+	case "lsp.setup":
+		go l.showSetup(doc, "", false)
 	case "lsp.reload_configuration":
 		if err := l.reloadSettings(); err != nil {
 			l.configError(err)
@@ -241,6 +247,7 @@ func (l *lsp) serverFor(lang string) *server {
 		l.publishStatusLocked(filepath.Base(argv[0]) + " not installed")
 		l.statusMu.Unlock()
 		l.servers[lang] = nil
+		l.missingServer(lang, argv[0])
 		return nil
 	}
 	s := newServer(l, lang, argv)
@@ -270,6 +277,10 @@ type server struct {
 	ended               atomic.Bool
 	stateMu             sync.Mutex
 	configMu            sync.Mutex
+	analysisMu          sync.Mutex
+	initialAnalysis     chan struct{}
+	initialAnalysisURI  string
+	initialAnalysisEnd  time.Time
 	done                chan struct{}
 	generation          uint64
 	readyCh             chan struct{}
@@ -335,7 +346,19 @@ func (s *server) start() {
 	s.status(s.name()+": starting", false)
 	go s.read(bufio.NewReaderSize(out, maxRPCHeader))
 	s.l.mu.Lock()
-	options := s.l.settings.forLanguage(s.lang).InitializationOptions
+	options := s.l.settings.forServer(s.lang, s.name()).InitializationOptions
+	if s.lang == "Swift" {
+		var custom map[string]any
+		if len(options) == 0 || json.Unmarshal(options, &custom) == nil {
+			options, _ = json.Marshal(mergeSettings(map[string]any{"swiftPM": map[string]any{"disableSandbox": true, "buildSystem": "native"}, "generatedFilesPath": filepath.Join(s.l.state, "cache", "swift-generated")}, custom))
+		}
+	}
+	if filepath.Base(s.argv[0]) == "ccls" {
+		var custom map[string]any
+		if len(options) == 0 || json.Unmarshal(options, &custom) == nil {
+			options, _ = json.Marshal(mergeSettings(map[string]any{"cache": map[string]any{"directory": filepath.Join(s.l.state, "cache", "ccls")}}, custom))
+		}
+	}
 	folders := s.l.workspaceFolders()
 	initial, known, root := s.l.initializeFolders()
 	s.l.mu.Unlock()
@@ -343,12 +366,17 @@ func (s *server) start() {
 	s.folders, s.foldersSent = initial, known
 	s.folderMu.Unlock()
 	initializeParams := map[string]any{
-		"processId": os.Getpid(), "rootUri": root,
+		// The bridge owns the child lifetime and closes its pipes on shutdown.
+		// A sandboxed server cannot probe this PID with kill(pid, 0); Node LSP
+		// libraries interpret EPERM as a dead client and exit after a few seconds.
+		"processId": nil, "rootUri": root,
 		"workspaceFolders":      folders,
 		"initializationOptions": options,
 		"capabilities":          s.l.clientCapabilities(s.l.workspaceWatchAvailable()),
 	}
-	res, err := s.call("initialize", initializeParams)
+	// ElixirLS and other compiler-backed servers may prepare their runtime on first launch.
+	// Keep startup cancellable, but do not apply an interactive request deadline to it.
+	res, err := s.callFor(3*time.Minute, "initialize", initializeParams)
 	if err != nil {
 		s.endServer(s.name() + ": " + err.Error())
 		return
@@ -418,6 +446,14 @@ func (s *server) read(br *bufio.Reader) {
 			if ch != nil {
 				ch <- body
 			}
+		case msg.Method == "window/logMessage" || msg.Method == "window/showMessage":
+			var message struct {
+				Type    int
+				Message string
+			}
+			if json.Unmarshal(msg.Params, &message) == nil && (message.Type <= 2 || strings.Contains(message.Message, "[error]")) {
+				s.l.ext.Logf("%s: %s", s.name(), message.Message)
+			}
 		case msg.Method == "$/progress":
 			if !s.feedProgress(msg.Params) {
 				s.progress(msg.Params)
@@ -447,6 +483,9 @@ func (s *server) publish(params json.RawMessage) {
 	}
 	if json.Unmarshal(params, &p) != nil {
 		return
+	}
+	if p.Diagnostics != nil {
+		s.finishInitialAnalysis(p.URI)
 	}
 	path := uriPath(p.URI)
 	kept, rich := s.l.keepFileDiagnostics(s, path, p.Diagnostics)
@@ -761,6 +800,8 @@ func main() {
 		rhunext.FeatureDocumentLinks, rhunext.FeatureFileDiagnostics, featureMarkdown,
 		// commands invoked with a body: a code action's server command is a command reference
 		rhunext.FeatureCommandArgs,
+		// Missing-server notices and a native installation guide.
+		rhunext.FeatureNotify, rhunext.FeatureViewTree, rhunext.FeatureViewDoc,
 		// workspace edits as transactions, file operations, showDocument, linked editing
 		rhunext.FeatureWorkspaceEdits, rhunext.FeatureFileOperations, rhunext.FeatureReveal, rhunext.FeatureLinkedEditing,
 		// the window's folders: the servers' workspace folders

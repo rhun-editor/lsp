@@ -80,6 +80,7 @@ func selectorFor(d *document) selectorDocument {
 type documentFilter struct {
 	language, scheme, base string
 	pattern                *regexp.Regexp
+	notebook               bool
 }
 type capabilityRegistration struct {
 	method      string
@@ -130,6 +131,9 @@ func parseSelector(raw json.RawMessage) ([]documentFilter, error) {
 				return nil, fmt.Errorf("invalid document filter")
 			}
 			for key, value := range obj {
+				if string(value) == "null" && (key == "scheme" || key == "pattern") {
+					continue
+				}
 				switch key {
 				case "language", "scheme":
 					text, err := jsonString(value)
@@ -141,6 +145,28 @@ func parseSelector(raw json.RawMessage) ([]documentFilter, error) {
 					} else {
 						filter.scheme = text
 					}
+				case "notebook":
+					// Notebook cell filters cannot match rhun's file documents, but may
+					// accompany ordinary Python filters in the same registration (Ruff).
+					if name, err := jsonString(value); err == nil {
+						if name == "" || len(name) > 256 {
+							return nil, fmt.Errorf("invalid notebook filter")
+						}
+					} else {
+						nb, err := jsonObject(value)
+						if err != nil || len(nb) == 0 {
+							return nil, fmt.Errorf("invalid notebook filter")
+						}
+						for key, value := range nb {
+							if key != "notebookType" && key != "scheme" && key != "pattern" {
+								return nil, fmt.Errorf("invalid notebook filter field")
+							}
+							if text, err := jsonString(value); err != nil || text == "" || len(text) > 4096 {
+								return nil, fmt.Errorf("invalid notebook filter value")
+							}
+						}
+					}
+					filter.notebook = true
 				case "pattern":
 					pattern, err := jsonString(value)
 					if err != nil {
@@ -199,6 +225,9 @@ func (r capabilityRegistration) matches(d selectorDocument) bool {
 		return true
 	}
 	for _, f := range r.selector {
+		if f.notebook {
+			continue
+		}
 		if f.language != "" && f.language != "*" && f.language != d.language {
 			continue
 		}
@@ -347,7 +376,7 @@ func (s *server) registerCapabilities(params json.RawMessage) (any, int, string)
 			return nil, -32602, "invalid registration ID"
 		}
 		method, err := jsonString(item["method"])
-		if _, known := capabilityFields[method]; err != nil || (!known && !isSynchronizationMethod(method) && method != watchedFilesMethod && !isFileOpMethod(method) && method != didChangeFoldersMethod) {
+		if _, known := capabilityFields[method]; err != nil || (!known && !isSynchronizationMethod(method) && method != watchedFilesMethod && !isFileOpMethod(method) && method != didChangeFoldersMethod && !passiveFileOpMethod(method)) {
 			return nil, -32602, "unsupported registration method"
 		}
 		if _, duplicate := batch[id]; duplicate {
@@ -383,7 +412,7 @@ func (s *server) registerCapabilities(params json.RawMessage) (any, int, string)
 					return nil, -32602, err.Error()
 				}
 			}
-			if isFileOpMethod(method) {
+			if isFileOpMethod(method) || passiveFileOpMethod(method) {
 				registration.fileFilters, err = parseFileOpFilters(item["registerOptions"])
 				if err != nil {
 					return nil, -32602, err.Error()
@@ -460,6 +489,12 @@ func (s *server) registerCapabilities(params json.RawMessage) (any, int, string)
 	}
 	if code == 0 {
 		s.l.scopeChanged()
+		for _, registration := range batch {
+			if registration.method == "textDocument/diagnostic" {
+				go s.l.repull(s)
+				break
+			}
+		}
 	}
 	return result, code, message
 }
@@ -546,4 +581,10 @@ func (s *server) requestDocument(wait time.Duration, method string, params any, 
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
 	return s.callContextGuard(ctx, method, params, guard)
+}
+
+// Some servers (Dart) include will* registrations in a batch despite the client only
+// advertising did*. Retain their IDs without invoking them, so the supported services survive.
+func passiveFileOpMethod(method string) bool {
+	return method == "workspace/willCreateFiles" || method == "workspace/willRenameFiles" || method == "workspace/willDeleteFiles"
 }

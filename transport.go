@@ -10,6 +10,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -42,7 +44,48 @@ func (s *server) launch() (io.ReadCloser, error) {
 		in.Close()
 		return nil, err
 	}
-	cmd := exec.Command(s.argv[0], s.argv[1:]...)
+	argv := append([]string(nil), s.argv...)
+	if s.lang == "Dart" && filepath.Base(argv[0]) == "dart" {
+		// Flutter's launcher bootstraps and updates Flutter. Its bundled Dart SDK
+		// provides the same language server without modifying the installation.
+		if path, err := exec.LookPath(argv[0]); err == nil {
+			if real, err := filepath.EvalSymlinks(path); err == nil {
+				sdk := filepath.Join(filepath.Dir(real), "cache", "dart-sdk", "bin", "dart")
+				if info, err := os.Stat(sdk); err == nil && !info.IsDir() && info.Mode()&0111 != 0 {
+					argv[0] = sdk
+				}
+			}
+		}
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Dir = s.l.project
+	if s.lang == "Kotlin" {
+		cmd.Env = append(cmd.Environ(), "JAVA_TOOL_OPTIONS="+strings.TrimSpace(os.Getenv("JAVA_TOOL_OPTIONS")+" -Djava.io.tmpdir="+strconv.Quote(filepath.ToSlash(filepath.Join(s.l.state, "tmp")))+" -Duser.home="+strconv.Quote(filepath.ToSlash(s.l.state))))
+	}
+	if s.lang == "Swift" && runtime.GOOS == "darwin" && (argv[0] == "sourcekit-lsp" || argv[0] == "/usr/bin/sourcekit-lsp") {
+		if toolchain, err := swiftToolchain(s.l.state); err == nil {
+			cmd.Env = append(cmd.Environ(), "SOURCEKIT_TOOLCHAIN_PATH="+toolchain, "CFFIXED_USER_HOME="+os.Getenv("HOME"), "CLANG_MODULE_CACHE_PATH="+filepath.Join(s.l.state, "cache", "clang"))
+		} else {
+			fmt.Fprintln(os.Stderr, "SourceKit toolchain:", err)
+		}
+	}
+	if s.lang == "Elixir" && runtime.GOOS == "darwin" {
+		cmd.Env = append(cmd.Environ(), `ERL_AFLAGS=-public_key cacerts_path '"/etc/ssl/cert.pem"'`)
+	}
+	if s.lang == "Ruby" {
+		bundleConfig := filepath.Join(s.l.project, ".bundle")
+		if _, err := os.Stat(filepath.Join(bundleConfig, "config")); err != nil {
+			bundleConfig = filepath.Join(s.l.state, "bundle")
+		}
+		cmd.Env = append(cmd.Environ(), "BUNDLE_USER_HOME="+filepath.Join(s.l.state, "bundle"), "BUNDLE_APP_CONFIG="+bundleConfig)
+	}
+	if s.lang == "OCaml" {
+		if path, err := exec.LookPath(argv[0]); err == nil {
+			if real, err := filepath.EvalSymlinks(path); err == nil {
+				cmd.Env = append(cmd.Environ(), "PATH="+filepath.Dir(real)+string(os.PathListSeparator)+os.Getenv("PATH"))
+			}
+		}
+	}
 	cmd.Dir, cmd.Stderr = s.l.project, os.Stderr
 	cmd.Stdin, cmd.Stdout = input, output
 	err = cmd.Start()
@@ -360,6 +403,11 @@ func (s *server) callContextGuard(ctx context.Context, method string, params any
 func (s *server) callContextRegistered(ctx context.Context, method string, params any, guard func() error, registered func(int)) (json.RawMessage, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if method != "initialize" && method != "shutdown" {
+		if err := s.waitInitialAnalysis(ctx); err != nil {
+			return nil, err
+		}
 	}
 	s.pmu.Lock()
 	if s.ended.Load() || len(s.pending) >= maxPending {
