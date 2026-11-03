@@ -425,17 +425,23 @@ func byteTokens(text []byte, data []uint32) []uint64 {
 	lines := bytes.Split(text, []byte{'\n'})
 	line, ch := 0, 0            // the server's absolute position
 	prevLine, prevByte := -1, 0 // the last token's in bytes
+	startUnits, startByte := 0, 0
 	for i := 0; i+5 <= len(data); i += 5 {
 		dl, dc := int(data[i]), int(data[i+1])
 		if dl > 0 {
 			line, ch = line+dl, dc
+			startUnits, startByte = 0, 0
 		} else {
 			ch += dc
 		}
 		if line >= len(lines) {
 			break
 		}
-		start, end := utf16Bytes(lines[line], ch), utf16Bytes(lines[line], ch+int(data[i+2]))
+		// Relative starts advance along the line. Rescanning its entire prefix for every token
+		// makes semantic coloring quadratic on long lines such as minified JavaScript.
+		startUnits, startByte = advanceUTF16(lines[line], startUnits, startByte, ch)
+		start := startByte
+		_, end := advanceUTF16(lines[line], startUnits, startByte, ch+int(data[i+2]))
 		if end <= start {
 			continue
 		}
@@ -457,13 +463,19 @@ func byteTokens(text []byte, data []uint32) []uint64 {
 
 // utf16Bytes is the byte offset of UTF-16 unit u in line (its end when past it)
 func utf16Bytes(line []byte, u int) int {
-	units, b := 0, 0
+	_, b := advanceUTF16(line, 0, 0, u)
+	return b
+}
+
+// advanceUTF16 retains the actual unit count, including when a requested position splits a
+// surrogate pair. A later token at its other half must still round to the same byte boundary.
+func advanceUTF16(line []byte, units, b, u int) (int, int) {
 	for b < len(line) && units < u {
 		r, n := utf8.DecodeRune(line[b:])
 		units += utf16.RuneLen(r)
 		b += n
 	}
-	return b
+	return units, b
 }
 
 // ---- inlay hints
