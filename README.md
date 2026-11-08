@@ -293,3 +293,7 @@ each protocol 1.1 mapping through the real SDK against an in-process fake rhun a
 The native gate also runs `tests/source-actions.py`: sequential edits, source-kind filtering,
 resolution, command reply/edits ordering, fresh command sessions, duplicate action handling,
 versions, foreign edits, cancellation, timeout and typing during a save.
+
+Workspace file watching skips directories with a valid `CACHEDIR.TAG` signature,
+including Cargo’s `target` cache, so build output does not exhaust the source
+watcher’s scan limits. Untagged directories remain watched regardless of name.

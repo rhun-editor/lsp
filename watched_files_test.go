@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -345,5 +346,57 @@ func TestWatchedFilesRetainDiffDuringDynamicRegistrationStartup(t *testing.T) {
 	changes := watchChanges(t, p)
 	if len(changes) != 1 || changes[0]["uri"] != fileURI(filepath.Join(l.project, "during-startup.go")) {
 		t.Fatal(changes)
+	}
+}
+
+// Cargo marks its target directory as a cache. Large build trees must not
+// consume the source watcher budget or prevent source changes from arriving.
+func TestWatchedWorkspaceSkipsTaggedCaches(t *testing.T) {
+	l, s, p, w := watchHarness(t)
+	cache := filepath.Join(l.project, "target")
+	if err := os.Mkdir(cache, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeWatchFile(t, filepath.Join(cache, "CACHEDIR.TAG"), "Signature: 8a477f597d28d172789f06886806bc55\n# cargo cache\n")
+	for i := 0; i <= maxWatchDirectories; i++ {
+		if err := os.Mkdir(filepath.Join(cache, fmt.Sprint(i)), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code, msg := watchRegister(s, "rust", watcherRules("**/*.rs", 7)); code != 0 {
+		t.Fatal(code, msg)
+	}
+	source := filepath.Join(l.project, "main.rs")
+	writeWatchFile(t, source, "fn main() {}")
+	reconcileWatch(t, w)
+	changes := watchChanges(t, p)
+	if len(changes) != 1 || changes[0]["uri"] != fileURI(source) {
+		t.Fatal(changes)
+	}
+	for path := range w.baseline {
+		if pathInWatchRoot(cache, path) {
+			t.Fatal("cache entered snapshot", path)
+		}
+	}
+}
+
+func TestWatchedWorkspacePreservesUntaggedTargetAndHiddenSources(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"target", ".hidden", "invalid-cache"} {
+		dir := filepath.Join(root, name)
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		writeWatchFile(t, filepath.Join(dir, "main.rs"), "fn main() {}")
+	}
+	writeWatchFile(t, filepath.Join(root, "invalid-cache", "CACHEDIR.TAG"), "not a cache signature")
+	snapshot, err := scanWatchedWorkspace(root, make(chan struct{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"target", ".hidden", "invalid-cache"} {
+		if _, ok := snapshot[filepath.Join(root, name, "main.rs")]; !ok {
+			t.Fatal("source skipped", name)
+		}
 	}
 }

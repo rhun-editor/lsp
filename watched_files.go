@@ -45,6 +45,26 @@ type workspaceWatcher struct {
 	lastError time.Time
 }
 
+// Cargo and other build tools mark disposable build trees with CACHEDIR.TAG.
+// Check the signature rather than the directory name: a source folder named
+// target (or a hidden source folder) must still be watched.
+func taggedWatchCache(root *os.Root, path string) bool {
+	const signature = "Signature: 8a477f597d28d172789f06886806bc55"
+	tag := filepath.Join(path, "CACHEDIR.TAG")
+	info, err := root.Lstat(tag)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	f, err := root.Open(tag)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var header [len(signature)]byte
+	_, err = io.ReadFull(f, header[:])
+	return err == nil && string(header[:]) == signature
+}
+
 func scanWatchedWorkspace(path string, done <-chan struct{}) (watchedSnapshot, error) {
 	root, err := os.OpenRoot(path)
 	if err != nil {
@@ -79,6 +99,9 @@ func scanWatchedWorkspace(path string, done <-chan struct{}) (watchedSnapshot, e
 					}
 					relative := filepath.Join(dirs[at], entry.Name())
 					absolute := filepath.Join(path, relative)
+					if entry.IsDir() && taggedWatchCache(root, relative) {
+						continue
+					}
 					pathBytes += len(absolute)
 					if len(absolute) > 4095 || pathBytes > maxWatchPathBytes || len(snapshot) >= maxWatchEntries {
 						return errors.New("workspace watch snapshot limit exceeded")
