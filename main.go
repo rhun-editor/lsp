@@ -120,6 +120,7 @@ type lsp struct {
 	actionsMu                      sync.Mutex // code actions waiting to be chosen (codeactions.go)
 	actionSerial                   uint64
 	actionSets                     map[uint64][]actionData
+	diagStreams                    map[string]*diagnosticStreams
 	diagOwner                      map[string]*server // which server's set rhun has for a file (diagnostics.go)
 	diagMu                         sync.Mutex
 	diagJobs                       []diagnosticsJob

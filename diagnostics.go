@@ -242,12 +242,58 @@ type diagnosticsJob struct {
 	clear   bool
 }
 
+// Servers can push compiler diagnostics while offering native analysis through
+// textDocument/diagnostic. Each stream replaces only its own previous report.
+type diagnosticStreams struct {
+	server         *server
+	pushed, pulled []json.RawMessage
+}
+
+func (d *diagnosticStreams) merged() []json.RawMessage {
+	out := make([]json.RawMessage, 0, len(d.pushed)+len(d.pulled))
+	seen := map[string]bool{}
+	for _, stream := range [][]json.RawMessage{d.pushed, d.pulled} {
+		for _, raw := range stream {
+			var key diagnosticKey
+			if json.Unmarshal(raw, &key) != nil {
+				continue
+			}
+			encoded, _ := json.Marshal(key)
+			if !seen[string(encoded)] {
+				seen[string(encoded)] = true
+				out = append(out, raw)
+			}
+		}
+	}
+	return out
+}
+
 // keepFileDiagnostics keeps a server's diagnostics for a file and queues them for rhun (with
 // file-diagnostics; v1 diagnostics otherwise go to the open document at once). It reports whether
 // the file-diagnostics path took them.
 func (l *lsp) keepFileDiagnostics(s *server, path string, raw []json.RawMessage) (*keptDiagnostics, bool) {
-	kept := keepDiagnostics(raw)
+	return l.keepDiagnosticReport(s, path, raw, false, nil)
+}
+
+func (l *lsp) keepDiagnosticReport(s *server, path string, raw []json.RawMessage, pull bool, q *documentQuery) (*keptDiagnostics, bool) {
 	l.mu.Lock()
+	if l.has(rhunext.FeatureFileDiagnostics) {
+		if l.diagStreams == nil {
+			l.diagStreams = map[string]*diagnosticStreams{}
+		}
+		streams := l.diagStreams[path]
+		if streams == nil || streams.server != s {
+			streams = &diagnosticStreams{server: s}
+			l.diagStreams[path] = streams
+		}
+		if pull {
+			streams.pulled = raw
+		} else {
+			streams.pushed = raw
+		}
+		raw = streams.merged()
+	}
+	kept := keepDiagnostics(raw)
 	l.diags[path] = kept
 	if !l.has(rhunext.FeatureFileDiagnostics) {
 		l.mu.Unlock()
@@ -260,6 +306,9 @@ func (l *lsp) keepFileDiagnostics(s *server, path string, raw []json.RawMessage)
 	job := diagnosticsJob{server: s, path: path, kept: kept}
 	if d := l.byPath[path]; d != nil && d.text != nil {
 		job.doc, job.version, job.text = d.id, d.version, d.text
+	}
+	if q != nil {
+		job.doc, job.version, job.text = q.id, q.version, q.text
 	}
 	l.mu.Unlock()
 	l.queueDiagnostics(job)
@@ -322,6 +371,7 @@ func (l *lsp) sendDiagnosticsJob(job diagnosticsJob) {
 		if current {
 			delete(l.diagOwner, job.path)
 			delete(l.diags, job.path)
+			delete(l.diagStreams, job.path)
 		}
 		l.mu.Unlock()
 		if current {
@@ -456,19 +506,11 @@ func (l *lsp) pull(d *document, s *server) {
 	}
 	l.pullMu.Unlock()
 	if report.Kind == "full" {
-		kept := keepDiagnostics(report.Items)
-		l.mu.Lock()
-		l.diags[q.path] = kept
-		if l.diagOwner == nil {
-			l.diagOwner = map[string]*server{}
-		}
-		l.diagOwner[q.path] = s
-		l.mu.Unlock()
-		l.queueDiagnostics(diagnosticsJob{server: s, path: q.path, kept: kept, doc: q.id, version: q.version, text: q.text})
+		l.keepDiagnosticReport(s, q.path, report.Items, true, q)
 	}
 	for uri, r := range report.Related {
 		if path := uriPath(uri); r.Kind == "full" && filepath.IsAbs(path) {
-			l.keepFileDiagnostics(s, path, r.Items)
+			l.keepDiagnosticReport(s, path, r.Items, true, nil)
 		}
 	}
 }

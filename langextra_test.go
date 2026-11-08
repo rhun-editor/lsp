@@ -303,3 +303,43 @@ func TestLinkTargets(t *testing.T) {
 		}
 	}
 }
+
+func TestPullDiagnosticsPreservePushedCompilerReports(t *testing.T) {
+	h := newHarness(t, moreFeatures, `{"diagnosticProvider":{}}`, sample,
+		func(f *fakeLSP, method string, id, params json.RawMessage) (any, bool) {
+			return map[string]any{"kind": "full", "items": []any{}}, true
+		})
+	pushed := []any{map[string]any{"range": rng(0, 0, 0, 7), "severity": 1, "source": "rustc", "message": "cannot find value missing_handler"}}
+	h.srv.notify("textDocument/publishDiagnostics", map[string]any{"uri": uri, "diagnostics": pushed})
+	h.host.request("file-diagnostics")
+	h.l.pull(h.d, h.s)
+	r := h.host.request("file-diagnostics")
+	if !strings.Contains(string(r.body), "cannot find value missing_handler") {
+		t.Fatalf("pull erased compiler diagnostic: %q", r.body)
+	}
+	// A push clear must still remove compiler reports.
+	h.srv.notify("textDocument/publishDiagnostics", map[string]any{"uri": uri, "diagnostics": []any{}})
+	r = h.host.request("file-diagnostics")
+	if r.args[1] != "0" {
+		t.Fatalf("push clear retained compiler diagnostic: %q", r.body)
+	}
+}
+
+func TestDiagnosticStreamsMergeAndClearIndependently(t *testing.T) {
+	compiler := json.RawMessage(`{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"message":"compiler error","source":"rustc","severity":1,"data":{"push":true}}`)
+	native := json.RawMessage(`{"range":{"start":{"line":1,"character":0},"end":{"line":1,"character":1}},"message":"native warning","source":"rust-analyzer","severity":2}`)
+	duplicate := json.RawMessage(`{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"message":"compiler error","source":"rustc","severity":1}`)
+	streams := diagnosticStreams{pushed: []json.RawMessage{compiler}, pulled: []json.RawMessage{duplicate, native}}
+	got := streams.merged()
+	if len(got) != 2 || string(got[0]) != string(compiler) || string(got[1]) != string(native) {
+		t.Fatalf("unexpected merged report: %s", got)
+	}
+	streams.pushed = nil
+	if got := streams.merged(); len(got) != 2 {
+		t.Fatalf("push clear erased pull reports: %s", got)
+	}
+	streams.pulled = nil
+	if got := streams.merged(); len(got) != 0 {
+		t.Fatalf("reports remain after both streams clear: %s", got)
+	}
+}
